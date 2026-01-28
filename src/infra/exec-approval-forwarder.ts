@@ -139,6 +139,58 @@ function buildRequestMessage(request: ExecApprovalRequest, nowMs: number) {
   return lines.join("\n");
 }
 
+function buildSlackApprovalBlocks(request: ExecApprovalRequest, nowMs: number): unknown[] {
+  const shortId = request.id.slice(0, 8);
+  const command = request.request.command;
+  const truncatedCommand = command.length > 200 ? command.slice(0, 200) + "..." : command;
+  const expiresIn = Math.max(0, Math.round((request.expiresAtMs - nowMs) / 1000));
+
+  const contextParts: string[] = [`ID: \`${shortId}\``];
+  if (request.request.cwd) contextParts.push(`CWD: ${request.request.cwd}`);
+  if (request.request.agentId) contextParts.push(`Agent: ${request.request.agentId}`);
+  contextParts.push(`Expires: ${expiresIn}s`);
+
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `🔒 *Exec approval required*\n\`\`\`${truncatedCommand}\`\`\``,
+      },
+    },
+    {
+      type: "context",
+      elements: [{ type: "mrkdwn", text: contextParts.join(" • ") }],
+    },
+    {
+      type: "actions",
+      block_id: `exec_approval_${request.id}`,
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "✅ Allow Once", emoji: true },
+          action_id: "exec_approve_once",
+          value: request.id,
+          style: "primary",
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "🔐 Always Allow", emoji: true },
+          action_id: "exec_approve_always",
+          value: request.id,
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "❌ Deny", emoji: true },
+          action_id: "exec_deny",
+          value: request.id,
+          style: "danger",
+        },
+      ],
+    },
+  ];
+}
+
 function decisionLabel(decision: ExecApprovalDecision): string {
   if (decision === "allow-once") {
     return "allowed once";
@@ -194,6 +246,7 @@ async function deliverToTargets(params: {
   cfg: OpenClawConfig;
   targets: ForwardTarget[];
   text: string;
+  slackBlocks?: unknown[];
   deliver: typeof deliverOutboundPayloads;
   shouldSend?: () => boolean;
 }) {
@@ -206,13 +259,21 @@ async function deliverToTargets(params: {
       return;
     }
     try {
+      // Include Slack blocks if targeting Slack
+      const channelData =
+        channel === "slack" && params.slackBlocks?.length
+          ? { slack: { blocks: params.slackBlocks } }
+          : undefined;
+      log.info(
+        `exec approvals: delivering to ${channel}:${target.to}, channelData=${channelData ? "present" : "absent"}, blocksCount=${params.slackBlocks?.length ?? 0}`,
+      );
       await params.deliver({
         cfg: params.cfg,
         channel,
         to: target.to,
         accountId: target.accountId,
         threadId: target.threadId,
-        payloads: [{ text: params.text }],
+        payloads: [{ text: params.text, channelData }],
       });
     } catch (err) {
       log.error(`exec approvals: failed to deliver to ${channel}:${target.to}: ${String(err)}`);
@@ -290,10 +351,18 @@ export function createExecApprovalForwarder(
     }
 
     const text = buildRequestMessage(request, nowMs());
+    const slackBlocks = buildSlackApprovalBlocks(request, nowMs());
+    log.info(
+      `exec approvals: delivering to ${targets.length} targets, slackBlocks=${slackBlocks.length}`,
+    );
+    for (const t of targets) {
+      log.info(`exec approvals: target channel=${t.channel} to=${t.to}`);
+    }
     await deliverToTargets({
       cfg,
       targets,
       text,
+      slackBlocks,
       deliver,
       shouldSend: () => pending.get(request.id) === pendingEntry,
     });

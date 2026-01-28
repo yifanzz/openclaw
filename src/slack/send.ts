@@ -33,6 +33,7 @@ type SlackSendOpts = {
   mediaUrl?: string;
   client?: WebClient;
   threadTs?: string;
+  blocks?: unknown[];
 };
 
 export type SlackSendResult = {
@@ -190,11 +191,16 @@ export async function sendMessageSlack(
       lastMessageId = response.ts ?? lastMessageId;
     }
   } else {
-    for (const chunk of chunks.length ? chunks : [""]) {
+    const textChunks = chunks.length ? chunks : [""];
+    for (let i = 0; i < textChunks.length; i++) {
+      const chunk = textChunks[i];
+      // Only include blocks on the first message
+      const messageBlocks = i === 0 && opts.blocks?.length ? opts.blocks : undefined;
       const response = await client.chat.postMessage({
         channel: channelId,
         text: chunk,
         thread_ts: opts.threadTs,
+        ...(messageBlocks ? { blocks: messageBlocks } : {}),
       });
       lastMessageId = response.ts ?? lastMessageId;
     }
