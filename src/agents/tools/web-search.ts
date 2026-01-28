@@ -76,6 +76,7 @@ type BraveSearchResult = {
   url?: string;
   description?: string;
   age?: string;
+  extra_snippets?: string[];
 };
 
 type BraveSearchResponse = {
@@ -416,6 +417,8 @@ async function runWebSearch(params: {
   if (params.freshness) {
     url.searchParams.set("freshness", params.freshness);
   }
+  // Extra snippets: up to 5 additional excerpts per result (requires Base AI plan)
+  url.searchParams.set("extra_snippets", "true");
 
   const res = await fetch(url.toString(), {
     method: "GET",
@@ -439,6 +442,7 @@ async function runWebSearch(params: {
     description: entry.description ?? "",
     published: entry.age ?? undefined,
     siteName: resolveSiteName(entry.url ?? ""),
+    extra_snippets: entry.extra_snippets ?? [],
   }));
 
   const payload = {
