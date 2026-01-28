@@ -55,6 +55,17 @@ export type SlackMonitorContext = {
   app: App;
   runtime: RuntimeEnv;
 
+  // Logging shortcuts
+  log?: (msg: string) => void;
+  error?: (msg: string) => void;
+
+  // Exec approval resolution (wired up by provider)
+  resolveExecApproval?: (
+    approvalId: string,
+    decision: string,
+    resolvedBy?: string,
+  ) => Promise<boolean>;
+
   botUserId: string;
   teamId: string;
   apiAppId: string;
