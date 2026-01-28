@@ -1,9 +1,10 @@
 import { Type } from "@sinclair/typebox";
+
 import type { OpenClawConfig } from "../../config/config.js";
-import type { AnyAgentTool } from "./common.js";
 import { formatCliCommand } from "../../cli/command-format.js";
 import { wrapWebContent } from "../../security/external-content.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
+import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readNumberParam, readStringParam } from "./common.js";
 import {
   CacheEntry,
@@ -80,6 +81,7 @@ type BraveSearchResult = {
   url?: string;
   description?: string;
   age?: string;
+  extra_snippets?: string[];
 };
 
 type BraveSearchResponse = {
@@ -527,7 +529,7 @@ async function runWebSearch(params: {
       provider: params.provider,
       model: params.perplexityModel ?? DEFAULT_PERPLEXITY_MODEL,
       tookMs: Date.now() - start,
-      content: wrapWebContent(content),
+      content,
       citations,
     };
     writeCache(SEARCH_CACHE, cacheKey, payload, params.cacheTtlMs);
@@ -575,6 +577,8 @@ async function runWebSearch(params: {
   if (params.freshness) {
     url.searchParams.set("freshness", params.freshness);
   }
+  // Extra snippets: up to 5 additional excerpts per result (requires Base AI plan)
+  url.searchParams.set("extra_snippets", "true");
 
   const res = await fetch(url.toString(), {
     method: "GET",
@@ -592,19 +596,14 @@ async function runWebSearch(params: {
 
   const data = (await res.json()) as BraveSearchResponse;
   const results = Array.isArray(data.web?.results) ? (data.web?.results ?? []) : [];
-  const mapped = results.map((entry) => {
-    const description = entry.description ?? "";
-    const title = entry.title ?? "";
-    const url = entry.url ?? "";
-    const rawSiteName = resolveSiteName(url);
-    return {
-      title: title ? wrapWebContent(title, "web_search") : "",
-      url, // Keep raw for tool chaining
-      description: description ? wrapWebContent(description, "web_search") : "",
-      published: entry.age || undefined,
-      siteName: rawSiteName || undefined,
-    };
-  });
+  const mapped = results.map((entry) => ({
+    title: entry.title ?? "",
+    url: entry.url ?? "",
+    description: entry.description ?? "",
+    published: entry.age ?? undefined,
+    siteName: resolveSiteName(entry.url ?? ""),
+    extra_snippets: entry.extra_snippets ?? [],
+  }));
 
   const payload = {
     query: params.query,
