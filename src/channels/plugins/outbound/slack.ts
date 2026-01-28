@@ -1,4 +1,5 @@
 import { sendMessageSlack } from "../../../slack/send.js";
+import { logVerbose } from "../../../globals.js";
 import type { ChannelOutboundAdapter } from "../types.js";
 
 export const slackOutbound: ChannelOutboundAdapter = {
@@ -23,6 +24,22 @@ export const slackOutbound: ChannelOutboundAdapter = {
       mediaUrl,
       threadTs,
       accountId: accountId ?? undefined,
+    });
+    return { channel: "slack", ...result };
+  },
+  sendPayload: async ({ to, text, accountId, deps, replyToId, threadId, payload }) => {
+    const send = deps?.sendSlack ?? sendMessageSlack;
+    const threadTs = replyToId ?? (threadId != null ? String(threadId) : undefined);
+    // Extract Slack-specific blocks from channelData
+    const slackData = payload?.channelData?.slack as { blocks?: unknown[] } | undefined;
+    const blocks = slackData?.blocks;
+    logVerbose(
+      `slack outbound sendPayload: to=${to}, hasChannelData=${!!payload?.channelData}, hasSlackData=${!!slackData}, blocksCount=${blocks?.length ?? 0}`,
+    );
+    const result = await send(to, text, {
+      threadTs,
+      accountId: accountId ?? undefined,
+      blocks,
     });
     return { channel: "slack", ...result };
   },

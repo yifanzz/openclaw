@@ -7,6 +7,8 @@ import { DEFAULT_GROUP_HISTORY_LIMIT } from "../../auto-reply/reply/history.js";
 import { mergeAllowlist, summarizeMapping } from "../../channels/allowlists/resolve-utils.js";
 import { loadConfig } from "../../config/config.js";
 import type { SessionScope } from "../../config/sessions.js";
+import type { DmPolicy, GroupPolicy } from "../../config/types.js";
+import { callGateway } from "../../gateway/call.js";
 import { warn } from "../../globals.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
 import type { RuntimeEnv } from "../../runtime.js";
@@ -206,6 +208,24 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     mediaMaxBytes,
     removeAckAfterReply,
   });
+
+  // Add logging shortcuts and exec approval resolution
+  ctx.log = runtime.log;
+  ctx.error = runtime.error;
+  ctx.resolveExecApproval = async (approvalId, decision, resolvedBy) => {
+    try {
+      await callGateway({
+        method: "exec.approval.resolve",
+        params: { id: approvalId, decision },
+        config: cfg,
+        timeoutMs: 5000,
+      });
+      return true;
+    } catch (err) {
+      runtime.error?.(`slack exec approval resolve failed: ${String(err)}`);
+      return false;
+    }
+  };
 
   const handleSlackMessage = createSlackMessageHandler({ ctx, account });
 
