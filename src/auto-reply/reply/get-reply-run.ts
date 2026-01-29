@@ -230,10 +230,11 @@ export async function runPreparedReply(
   });
   prefixedBodyBase = appendUntrustedContext(prefixedBodyBase, sessionCtx.UntrustedContext);
   const threadStarterBody = ctx.ThreadStarterBody?.trim();
-  const threadStarterNote =
-    isNewSession && threadStarterBody
-      ? `[Thread starter - for context]\n${threadStarterBody}`
-      : undefined;
+  const shouldInjectThreadStarter =
+    Boolean(threadStarterBody) && !sessionEntry?.threadStarterInjectedAt;
+  const threadStarterNote = shouldInjectThreadStarter
+    ? `[Thread starter - for context]\n${threadStarterBody}`
+    : undefined;
   const skillResult = await ensureSkillSnapshot({
     sessionEntry,
     sessionStore,
@@ -248,6 +249,13 @@ export async function runPreparedReply(
   sessionEntry = skillResult.sessionEntry ?? sessionEntry;
   currentSystemSent = skillResult.systemSent;
   const skillsSnapshot = skillResult.skillsSnapshot;
+  if (shouldInjectThreadStarter && sessionEntry && sessionStore && sessionKey && storePath) {
+    sessionEntry.threadStarterInjectedAt = Date.now();
+    sessionStore[sessionKey] = sessionEntry;
+    await updateSessionStore(storePath, (store) => {
+      store[sessionKey] = sessionEntry;
+    });
+  }
   const prefixedBody = [threadStarterNote, prefixedBodyBase].filter(Boolean).join("\n\n");
   const mediaNote = buildInboundMediaNote(ctx);
   const mediaReplyHint = mediaNote
