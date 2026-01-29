@@ -80,6 +80,8 @@ function throwIfAborted(abortSignal?: AbortSignal): void {
   }
 }
 
+import { logVerbose } from "../../globals.js";
+
 // Channel docking: outbound delivery delegates to plugin.outbound adapters.
 async function createChannelHandler(params: {
   cfg: OpenClawConfig;
@@ -92,6 +94,9 @@ async function createChannelHandler(params: {
   gifPlayback?: boolean;
 }): Promise<ChannelHandler> {
   const outbound = await loadChannelOutboundAdapter(params.channel);
+  logVerbose(
+    `outbound delivery: channel=${params.channel}, hasSendText=${!!outbound?.sendText}, hasSendMedia=${!!outbound?.sendMedia}, hasSendPayload=${!!outbound?.sendPayload}`,
+  );
   if (!outbound?.sendText || !outbound?.sendMedia) {
     throw new Error(`Outbound not configured for channel: ${params.channel}`);
   }
@@ -318,16 +323,23 @@ export async function deliverOutboundPayloads(params: {
     };
   };
   const normalizedPayloads = normalizeReplyPayloadsForDelivery(payloads);
+  logVerbose(
+    `outbound delivery: normalizedPayloads=${normalizedPayloads.length}, hasSendPayload=${!!handler.sendPayload}`,
+  );
   for (const payload of normalizedPayloads) {
     const payloadSummary: NormalizedOutboundPayload = {
       text: payload.text ?? "",
       mediaUrls: payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []),
       channelData: payload.channelData,
     };
+    logVerbose(
+      `outbound delivery payload: hasChannelData=${!!payload.channelData}, channelDataKeys=${Object.keys(payload.channelData ?? {}).join(",")}`,
+    );
     try {
       throwIfAborted(abortSignal);
       params.onPayload?.(payloadSummary);
       if (handler.sendPayload && payload.channelData) {
+        logVerbose(`outbound delivery: using sendPayload for channel=${channel}`);
         results.push(await handler.sendPayload(payload));
         continue;
       }
