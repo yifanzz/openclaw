@@ -186,6 +186,110 @@ describe("initSessionState thread forking", () => {
     expect(messageRoles).toEqual(["user", "assistant", "user", "assistant"]);
   });
 
+  it("backfills inherited parent transcript for existing thread sessions missing parent headers", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-thread-backfill-"));
+    const sessionsDir = path.join(root, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+
+    const parentSessionId = "parent-session";
+    const parentSessionFile = path.join(sessionsDir, "parent.jsonl");
+    const parentHeader = {
+      type: "session",
+      version: 3,
+      id: parentSessionId,
+      timestamp: new Date().toISOString(),
+      cwd: process.cwd(),
+    };
+    const parentMessage = {
+      type: "message",
+      id: "m1",
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      message: { role: "user", content: "Parent prompt" },
+    };
+    await fs.writeFile(
+      parentSessionFile,
+      `${JSON.stringify(parentHeader)}\n${JSON.stringify(parentMessage)}\n`,
+      "utf-8",
+    );
+
+    const childSessionId = "child-session";
+    const childSessionFile = path.join(sessionsDir, "child.jsonl");
+    const childHeader = {
+      type: "session",
+      version: 3,
+      id: childSessionId,
+      timestamp: new Date().toISOString(),
+      cwd: process.cwd(),
+    };
+    const childMessage = {
+      type: "message",
+      id: "m2",
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      message: { role: "user", content: "Child prompt" },
+    };
+    await fs.writeFile(
+      childSessionFile,
+      `${JSON.stringify(childHeader)}\n${JSON.stringify(childMessage)}\n`,
+      "utf-8",
+    );
+
+    const storePath = path.join(root, "sessions.json");
+    const parentSessionKey = "agent:main:slack:channel:c1";
+    const threadSessionKey = "agent:main:slack:channel:c1:thread:789";
+    await saveSessionStore(storePath, {
+      [parentSessionKey]: {
+        sessionId: parentSessionId,
+        sessionFile: parentSessionFile,
+        updatedAt: Date.now(),
+      },
+      [threadSessionKey]: {
+        sessionId: childSessionId,
+        sessionFile: childSessionFile,
+        updatedAt: Date.now(),
+      },
+    });
+
+    const cfg = {
+      session: { store: storePath },
+      channels: {
+        slack: { thread: { inheritParent: true, inheritParentLimit: 2 } },
+      },
+    } as MoltbotConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "Thread reply",
+        Provider: "slack",
+        SessionKey: threadSessionKey,
+        ParentSessionKey: parentSessionKey,
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    const newSessionFile = result.sessionEntry.sessionFile;
+    expect(newSessionFile).toBeTruthy();
+    expect(newSessionFile).not.toBe(childSessionFile);
+    if (!newSessionFile) {
+      throw new Error("Missing session file for backfilled thread");
+    }
+
+    const lines = (await fs.readFile(newSessionFile, "utf-8"))
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0);
+    const parsedHeader = JSON.parse(lines[0] ?? "{}") as {
+      parentSession?: string;
+    };
+    expect(parsedHeader.parentSession).toBe(parentSessionFile);
+    const messageRoles = lines
+      .map((line) => JSON.parse(line) as { type?: string; message?: { role?: string } })
+      .filter((entry) => entry.type === "message")
+      .map((entry) => entry.message?.role);
+    expect(messageRoles).toEqual(["user", "user"]);
+  });
+
   it("records topic-specific session files when MessageThreadId is present", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-topic-session-"));
     const storePath = path.join(root, "sessions.json");
