@@ -1269,6 +1269,7 @@ Slack runs in Socket Mode and requires both a bot token and app token:
         historyScope: "thread", // thread | channel
         inheritParent: false,
         inheritParentLimit: 12, // last N user turns from parent transcript
+        inheritParentIncludeToolResults: true, // keep tool results from parent transcript
       },
       actions: {
         reactions: true,
@@ -1310,6 +1311,7 @@ Thread session isolation:
 - `channels.slack.thread.historyScope` controls whether thread history is per-thread (`thread`, default) or shared across the channel (`channel`).
 - `channels.slack.thread.inheritParent` controls whether new thread sessions inherit the parent channel transcript (default: false).
 - `channels.slack.thread.inheritParentLimit` limits inherited parent transcript to the last N user turns (only applies when `inheritParent` is true).
+- `channels.slack.thread.inheritParentIncludeToolResults` controls whether parent thread inheritance includes tool results (default: true).
 
 Slack action groups (gate `slack` tool actions):
 | Action group | Default | Notes |

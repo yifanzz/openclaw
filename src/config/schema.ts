@@ -339,6 +339,7 @@ const FIELD_LABELS: Record<string, string> = {
   "channels.slack.userTokenReadOnly": "Slack User Token Read Only",
   "channels.slack.thread.historyScope": "Slack Thread History Scope",
   "channels.slack.thread.inheritParent": "Slack Thread Parent Inheritance",
+  "channels.slack.thread.inheritParentIncludeToolResults": "Slack Thread Parent Tool Results",
   "channels.mattermost.botToken": "Mattermost Bot Token",
   "channels.mattermost.baseUrl": "Mattermost Base URL",
   "channels.mattermost.chatmode": "Mattermost Chat Mode",
@@ -473,6 +474,8 @@ const FIELD_HELP: Record<string, string> = {
     "If true, Slack thread sessions inherit the parent channel transcript (default: false).",
   "channels.slack.thread.inheritParentLimit":
     "Limit inherited Slack thread parent transcript to the last N user turns (requires inheritParent).",
+  "channels.slack.thread.inheritParentIncludeToolResults":
+    "Include tool results when inheriting Slack thread parent transcripts (default: true).",
   "channels.mattermost.botToken":
     "Bot token from Mattermost System Console -> Integrations -> Bot Accounts.",
   "channels.mattermost.baseUrl":
