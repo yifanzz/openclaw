@@ -81,6 +81,113 @@ describe("initSessionState thread forking", () => {
     expect(parsedHeader.parentSession).toBe(parentSessionFile);
   });
 
+  it("limits inherited parent transcript when configured", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-thread-limit-"));
+    const sessionsDir = path.join(root, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+
+    const parentSessionId = "parent-session";
+    const parentSessionFile = path.join(sessionsDir, "parent.jsonl");
+    const header = {
+      type: "session",
+      version: 3,
+      id: parentSessionId,
+      timestamp: new Date().toISOString(),
+      cwd: process.cwd(),
+    };
+    const entries = [
+      {
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: "u1" },
+      },
+      {
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: new Date().toISOString(),
+        message: { role: "assistant", content: "a1" },
+      },
+      {
+        type: "message",
+        id: "m3",
+        parentId: "m2",
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: "u2" },
+      },
+      {
+        type: "message",
+        id: "m4",
+        parentId: "m3",
+        timestamp: new Date().toISOString(),
+        message: { role: "assistant", content: "a2" },
+      },
+      {
+        type: "message",
+        id: "m5",
+        parentId: "m4",
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: "u3" },
+      },
+      {
+        type: "message",
+        id: "m6",
+        parentId: "m5",
+        timestamp: new Date().toISOString(),
+        message: { role: "assistant", content: "a3" },
+      },
+    ];
+    await fs.writeFile(
+      parentSessionFile,
+      `${JSON.stringify(header)}\n${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf-8",
+    );
+
+    const storePath = path.join(root, "sessions.json");
+    const parentSessionKey = "agent:main:slack:channel:c1";
+    await saveSessionStore(storePath, {
+      [parentSessionKey]: {
+        sessionId: parentSessionId,
+        sessionFile: parentSessionFile,
+        updatedAt: Date.now(),
+      },
+    });
+
+    const cfg = {
+      session: { store: storePath },
+      channels: {
+        slack: { thread: { inheritParent: true, inheritParentLimit: 2 } },
+      },
+    } as MoltbotConfig;
+
+    const threadSessionKey = "agent:main:slack:channel:c1:thread:456";
+    const result = await initSessionState({
+      ctx: {
+        Body: "Thread reply",
+        Provider: "slack",
+        SessionKey: threadSessionKey,
+        ParentSessionKey: parentSessionKey,
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    const newSessionFile = result.sessionEntry.sessionFile;
+    if (!newSessionFile) {
+      throw new Error("Missing session file for forked thread");
+    }
+    const lines = (await fs.readFile(newSessionFile, "utf-8"))
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0);
+    const messageRoles = lines
+      .map((line) => JSON.parse(line) as { type?: string; message?: { role?: string } })
+      .filter((entry) => entry.type === "message")
+      .map((entry) => entry.message?.role);
+    expect(messageRoles).toEqual(["user", "assistant", "user", "assistant"]);
+  });
+
   it("records topic-specific session files when MessageThreadId is present", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-topic-session-"));
     const storePath = path.join(root, "sessions.json");
