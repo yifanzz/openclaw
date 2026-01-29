@@ -188,6 +188,124 @@ describe("initSessionState thread forking", () => {
     expect(messageRoles).toEqual(["user", "assistant", "user", "assistant"]);
   });
 
+  it("drops tool results from inherited parent transcript when configured", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-thread-tools-"));
+    const sessionsDir = path.join(root, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+
+    const parentSessionId = "parent-session";
+    const parentSessionFile = path.join(sessionsDir, "parent.jsonl");
+    const header = {
+      type: "session",
+      version: 3,
+      id: parentSessionId,
+      timestamp: new Date().toISOString(),
+      cwd: process.cwd(),
+    };
+    const entries = [
+      {
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: "u1" },
+      },
+      {
+        type: "message",
+        id: "m2",
+        parentId: "m1",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "assistant text" },
+            { type: "toolCall", id: "call-1", name: "read", arguments: {} },
+          ],
+        },
+      },
+      {
+        type: "message",
+        id: "m3",
+        parentId: "m2",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "read",
+          content: [{ type: "text", text: "result" }],
+        },
+      },
+      {
+        type: "message",
+        id: "m4",
+        parentId: "m3",
+        timestamp: new Date().toISOString(),
+        message: { role: "assistant", content: "final" },
+      },
+    ];
+    await fs.writeFile(
+      parentSessionFile,
+      `${JSON.stringify(header)}\n${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf-8",
+    );
+
+    const storePath = path.join(root, "sessions.json");
+    const parentSessionKey = "agent:main:slack:channel:c1";
+    await saveSessionStore(storePath, {
+      [parentSessionKey]: {
+        sessionId: parentSessionId,
+        sessionFile: parentSessionFile,
+        updatedAt: Date.now(),
+      },
+    });
+
+    const cfg = {
+      session: { store: storePath },
+      channels: {
+        slack: { thread: { inheritParent: true, inheritParentIncludeToolResults: false } },
+      },
+    } as MoltbotConfig;
+
+    const threadSessionKey = "agent:main:slack:channel:c1:thread:456";
+    const result = await initSessionState({
+      ctx: {
+        Body: "Thread reply",
+        Provider: "slack",
+        SessionKey: threadSessionKey,
+        ParentSessionKey: parentSessionKey,
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    const newSessionFile = result.sessionEntry.sessionFile;
+    if (!newSessionFile) {
+      throw new Error("Missing session file for forked thread");
+    }
+    const lines = (await fs.readFile(newSessionFile, "utf-8"))
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0);
+    const messages = lines
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            type?: string;
+            message?: { role?: string; content?: unknown };
+          },
+      )
+      .filter((entry) => entry.type === "message")
+      .map((entry) => entry.message);
+    const messageRoles = messages.map((message) => message?.role);
+    expect(messageRoles).toEqual(["user", "assistant", "assistant"]);
+    const assistantWithBlocks = messages.find((message) => Array.isArray(message?.content));
+    expect(assistantWithBlocks).toBeTruthy();
+    const hasToolCall = (assistantWithBlocks?.content ?? []).some(
+      (block: { type?: string }) =>
+        block?.type === "toolCall" || block?.type === "toolUse" || block?.type === "functionCall",
+    );
+    expect(hasToolCall).toBe(false);
+  });
+
   it("backfills inherited parent transcript for existing thread sessions missing parent headers", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-thread-backfill-"));
     const sessionsDir = path.join(root, "sessions");
