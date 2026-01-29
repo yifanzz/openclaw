@@ -1,12 +1,12 @@
-import { CURRENT_SESSION_VERSION, SessionManager } from "@mariozechner/pi-coding-agent";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+
+import { CURRENT_SESSION_VERSION, SessionManager } from "@mariozechner/pi-coding-agent";
+import { limitHistoryTurns } from "../../agents/pi-embedded-runner/history.js";
+import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { TtsAutoMode } from "../../config/types.tts.js";
-import type { MsgContext, TemplateContext } from "../templating.js";
-import { resolveSessionAgentId } from "../../agents/agent-scope.js";
-import { normalizeChatType } from "../../channels/chat-type.js";
 import {
   DEFAULT_RESET_TRIGGERS,
   deriveSessionMetaPatch,
@@ -27,11 +27,13 @@ import {
   updateSessionStore,
 } from "../../config/sessions.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
-import { normalizeSessionDeliveryFields } from "../../utils/delivery-context.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
+import type { MsgContext, TemplateContext } from "../templating.js";
+import { normalizeChatType } from "../../channels/chat-type.js";
+import { stripMentions, stripStructuralPrefixes } from "./mentions.js";
 import { formatInboundBodyWithSenderMeta } from "./inbound-sender-meta.js";
 import { normalizeInboundTextNewlines } from "./inbound-text.js";
-import { stripMentions, stripStructuralPrefixes } from "./mentions.js";
+import { normalizeSessionDeliveryFields } from "../../utils/delivery-context.js";
 
 export type SessionInitResult = {
   sessionCtx: TemplateContext;
@@ -51,6 +53,50 @@ export type SessionInitResult = {
   bodyStripped?: string;
   triggerBodyNormalized: string;
 };
+
+function normalizeTurnLimit(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const normalized = Math.floor(value);
+  if (!Number.isFinite(normalized) || normalized < 1) return undefined;
+  return normalized;
+}
+
+function resolveSlackThreadParentLimit(params: {
+  cfg: MoltbotConfig;
+  accountId?: string | null;
+}): number | undefined {
+  const slack = params.cfg.channels?.slack;
+  if (!slack || typeof slack !== "object") return undefined;
+  const accountId = params.accountId?.trim();
+  const accounts =
+    slack && typeof slack === "object" && "accounts" in slack ? slack.accounts : undefined;
+  const account =
+    accountId && accounts && typeof accounts === "object"
+      ? ((accounts as Record<string, { thread?: { inheritParentLimit?: number } } | undefined>)[
+          accountId
+        ] ??
+        (accounts as Record<string, { thread?: { inheritParentLimit?: number } } | undefined>)[
+          accountId.toLowerCase()
+        ])
+      : undefined;
+  return normalizeTurnLimit(
+    account?.thread?.inheritParentLimit ??
+      (slack as { thread?: { inheritParentLimit?: number } }).thread?.inheritParentLimit,
+  );
+}
+
+function setSessionParentHeader(params: { sessionFile: string; parentSessionFile: string }) {
+  const { sessionFile, parentSessionFile } = params;
+  const content = fs.readFileSync(sessionFile, "utf-8");
+  const lines = content.split(/\r?\n/);
+  const headerIndex = lines.findIndex((line) => line.trim().length > 0);
+  if (headerIndex < 0) return;
+  const header = JSON.parse(lines[headerIndex] ?? "{}") as { type?: string };
+  if (header.type !== "session") return;
+  const nextHeader = { ...header, parentSession: parentSessionFile };
+  lines[headerIndex] = JSON.stringify(nextHeader);
+  fs.writeFileSync(sessionFile, lines.join("\n"), "utf-8");
+}
 
 function forkSessionFromParent(params: {
   parentEntry: SessionEntry;
@@ -91,6 +137,41 @@ function forkSessionFromParent(params: {
   }
 }
 
+function isPiMessage(value: unknown): value is { role: "user" | "assistant" | "toolResult" } {
+  if (!value || typeof value !== "object") return false;
+  const role = (value as { role?: unknown }).role;
+  return role === "user" || role === "assistant" || role === "toolResult";
+}
+
+function forkSessionFromParentWithLimit(params: {
+  parentEntry: SessionEntry;
+  limit: number;
+}): { sessionId: string; sessionFile: string } | null {
+  const parentSessionFile = resolveSessionFilePath(
+    params.parentEntry.sessionId,
+    params.parentEntry,
+  );
+  if (!parentSessionFile || !fs.existsSync(parentSessionFile)) return null;
+  try {
+    const parent = SessionManager.open(parentSessionFile);
+    const parentContext = parent.buildSessionContext();
+    const limitedMessages = limitHistoryTurns(parentContext.messages, params.limit);
+
+    const forked = SessionManager.create(parent.getCwd(), parent.getSessionDir());
+    for (const message of limitedMessages) {
+      if (!isPiMessage(message)) continue;
+      forked.appendMessage(message);
+    }
+    const sessionFile = forked.getSessionFile();
+    const sessionId = forked.getSessionId();
+    if (!sessionFile || !sessionId) return null;
+    setSessionParentHeader({ sessionFile, parentSessionFile });
+    return { sessionId, sessionFile };
+  } catch {
+    return null;
+  }
+}
+
 export async function initSessionState(params: {
   ctx: MsgContext;
   cfg: OpenClawConfig;
@@ -117,6 +198,11 @@ export async function initSessionState(params: {
     : DEFAULT_RESET_TRIGGERS;
   const sessionScope = sessionCfg?.scope ?? "per-sender";
   const storePath = resolveStorePath(sessionCfg?.store, { agentId });
+  const providerId = (ctx.Provider ?? ctx.Surface ?? "").trim().toLowerCase();
+  const slackThreadParentLimit =
+    providerId === "slack"
+      ? resolveSlackThreadParentLimit({ cfg, accountId: ctx.AccountId ?? undefined })
+      : undefined;
 
   const sessionStore: Record<string, SessionEntry> = loadSessionStore(storePath);
   let sessionKey: string | undefined;
@@ -313,13 +399,20 @@ export async function initSessionState(params: {
     parentSessionKey !== sessionKey &&
     sessionStore[parentSessionKey]
   ) {
+    const parentEntry = sessionStore[parentSessionKey];
     console.warn(
       `[session-init] forking from parent session: parentKey=${parentSessionKey} → sessionKey=${sessionKey} ` +
-        `parentTokens=${sessionStore[parentSessionKey].totalTokens ?? "?"}`,
+        `parentTokens=${parentEntry?.totalTokens ?? "?"}`,
     );
-    const forked = forkSessionFromParent({
-      parentEntry: sessionStore[parentSessionKey],
-    });
+    const forked =
+      parentEntry && slackThreadParentLimit
+        ? forkSessionFromParentWithLimit({
+            parentEntry,
+            limit: slackThreadParentLimit,
+          })
+        : forkSessionFromParent({
+            parentEntry,
+          });
     if (forked) {
       sessionId = forked.sessionId;
       sessionEntry.sessionId = forked.sessionId;

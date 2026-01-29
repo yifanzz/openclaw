@@ -73,9 +73,15 @@ export type SlackThreadConfig = {
   historyScope?: "thread" | "channel";
   /** If true, thread sessions inherit the parent channel transcript. Default: false. */
   inheritParent?: boolean;
-  /** Max messages to inherit from the parent transcript. Default: unlimited. */
+  /**
+   * Limit inherited parent transcript to the last N user turns (only when inheritParent is true).
+   * Default: unlimited.
+   */
   inheritParentLimit?: number;
-  /** If true, include tool results in the inherited parent transcript. Default: false. */
+  /**
+   * If false, parent transcript inheritance drops tool results (and assistant tool-call blocks).
+   * Default: true.
+   */
   inheritParentIncludeToolResults?: boolean;
 };
 
