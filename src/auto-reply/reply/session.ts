@@ -85,6 +85,55 @@ function resolveSlackThreadParentLimit(params: {
   );
 }
 
+function resolveSlackThreadInheritParent(params: {
+  cfg: MoltbotConfig;
+  accountId?: string | null;
+}): boolean {
+  const slack = params.cfg.channels?.slack;
+  if (!slack || typeof slack !== "object") return false;
+  const accountId = params.accountId?.trim();
+  const accounts =
+    slack && typeof slack === "object" && "accounts" in slack ? slack.accounts : undefined;
+  const account =
+    accountId && accounts && typeof accounts === "object"
+      ? ((accounts as Record<string, { thread?: { inheritParent?: boolean } } | undefined>)[
+          accountId
+        ] ??
+        (accounts as Record<string, { thread?: { inheritParent?: boolean } } | undefined>)[
+          accountId.toLowerCase()
+        ])
+      : undefined;
+  return Boolean(
+    account?.thread?.inheritParent ??
+    (slack as { thread?: { inheritParent?: boolean } }).thread?.inheritParent,
+  );
+}
+
+const THREAD_SESSION_SUFFIX_REGEX = /^(.*)(?::(?:thread|topic):[^:]+)$/i;
+
+function inferParentSessionKey(sessionKey?: string | null): string | undefined {
+  const trimmed = sessionKey?.trim();
+  if (!trimmed) return undefined;
+  const match = THREAD_SESSION_SUFFIX_REGEX.exec(trimmed);
+  const parentKey = match?.[1]?.trim();
+  return parentKey || undefined;
+}
+
+function readSessionParentHeader(sessionFile: string): string | undefined {
+  if (!sessionFile || !fs.existsSync(sessionFile)) return undefined;
+  const content = fs.readFileSync(sessionFile, "utf-8");
+  const lines = content.split(/\r?\n/);
+  const headerIndex = lines.findIndex((line) => line.trim().length > 0);
+  if (headerIndex < 0) return undefined;
+  const header = JSON.parse(lines[headerIndex] ?? "{}") as {
+    type?: string;
+    parentSession?: string;
+  };
+  if (header.type !== "session") return undefined;
+  const parentSession = header.parentSession?.trim();
+  return parentSession || undefined;
+}
+
 function setSessionParentHeader(params: { sessionFile: string; parentSessionFile: string }) {
   const { sessionFile, parentSessionFile } = params;
   const content = fs.readFileSync(sessionFile, "utf-8");
@@ -96,6 +145,24 @@ function setSessionParentHeader(params: { sessionFile: string; parentSessionFile
   const nextHeader = { ...header, parentSession: parentSessionFile };
   lines[headerIndex] = JSON.stringify(nextHeader);
   fs.writeFileSync(sessionFile, lines.join("\n"), "utf-8");
+}
+
+function persistSessionIfMissing(params: {
+  manager: SessionManager;
+  parentSessionFile?: string;
+}): boolean {
+  const sessionFile = params.manager.getSessionFile();
+  if (!sessionFile) return false;
+  if (fs.existsSync(sessionFile)) return true;
+  const header = params.manager.getHeader();
+  if (!header) return false;
+  const headerWithParent = params.parentSessionFile
+    ? { ...header, parentSession: params.parentSessionFile }
+    : header;
+  const entries = params.manager.getEntries();
+  const content = `${[headerWithParent, ...entries].map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+  fs.writeFileSync(sessionFile, content, "utf-8");
+  return true;
 }
 
 function forkSessionFromParent(params: {
@@ -165,6 +232,55 @@ function forkSessionFromParentWithLimit(params: {
     const sessionFile = forked.getSessionFile();
     const sessionId = forked.getSessionId();
     if (!sessionFile || !sessionId) return null;
+    persistSessionIfMissing({ manager: forked, parentSessionFile });
+    setSessionParentHeader({ sessionFile, parentSessionFile });
+    return { sessionId, sessionFile };
+  } catch {
+    return null;
+  }
+}
+
+function mergeSessionFromParent(params: {
+  parentEntry: SessionEntry;
+  childEntry: SessionEntry;
+  limit?: number;
+}): { sessionId: string; sessionFile: string } | null {
+  const parentSessionFile = resolveSessionFilePath(
+    params.parentEntry.sessionId,
+    params.parentEntry,
+  );
+  const childSessionFile = resolveSessionFilePath(params.childEntry.sessionId, params.childEntry);
+  if (
+    !parentSessionFile ||
+    !childSessionFile ||
+    !fs.existsSync(parentSessionFile) ||
+    !fs.existsSync(childSessionFile)
+  ) {
+    return null;
+  }
+  try {
+    const parent = SessionManager.open(parentSessionFile);
+    const child = SessionManager.open(childSessionFile);
+    const parentContext = parent.buildSessionContext();
+    const childContext = child.buildSessionContext();
+    const limitedParent = params.limit
+      ? limitHistoryTurns(parentContext.messages, params.limit)
+      : parentContext.messages;
+
+    const merged = SessionManager.create(child.getCwd(), child.getSessionDir());
+    for (const message of limitedParent) {
+      if (!isPiMessage(message)) continue;
+      merged.appendMessage(message);
+    }
+    for (const message of childContext.messages) {
+      if (!isPiMessage(message)) continue;
+      merged.appendMessage(message);
+    }
+
+    const sessionFile = merged.getSessionFile();
+    const sessionId = merged.getSessionId();
+    if (!sessionFile || !sessionId) return null;
+    persistSessionIfMissing({ manager: merged, parentSessionFile });
     setSessionParentHeader({ sessionFile, parentSessionFile });
     return { sessionId, sessionFile };
   } catch {
@@ -199,6 +315,10 @@ export async function initSessionState(params: {
   const sessionScope = sessionCfg?.scope ?? "per-sender";
   const storePath = resolveStorePath(sessionCfg?.store, { agentId });
   const providerId = (ctx.Provider ?? ctx.Surface ?? "").trim().toLowerCase();
+  const slackThreadInheritParent =
+    providerId === "slack"
+      ? resolveSlackThreadInheritParent({ cfg, accountId: ctx.AccountId ?? undefined })
+      : false;
   const slackThreadParentLimit =
     providerId === "slack"
       ? resolveSlackThreadParentLimit({ cfg, accountId: ctx.AccountId ?? undefined })
@@ -281,6 +401,11 @@ export async function initSessionState(params: {
 
   sessionKey = resolveSessionKey(sessionScope, sessionCtxForState, mainKey);
   const entry = sessionStore[sessionKey];
+  const derivedParentSessionKey =
+    slackThreadInheritParent && !ctx.ParentSessionKey
+      ? inferParentSessionKey(sessionKey)
+      : undefined;
+  const parentSessionKey = ctx.ParentSessionKey?.trim() || derivedParentSessionKey;
   const previousSessionEntry = resetTriggered && entry ? { ...entry } : undefined;
   const now = Date.now();
   const isThread = resolveThreadFlag({
@@ -392,7 +517,6 @@ export async function initSessionState(params: {
   if (threadLabel) {
     sessionEntry.displayName = threadLabel;
   }
-  const parentSessionKey = ctx.ParentSessionKey?.trim();
   if (
     isNewSession &&
     parentSessionKey &&
@@ -418,6 +542,22 @@ export async function initSessionState(params: {
       sessionEntry.sessionId = forked.sessionId;
       sessionEntry.sessionFile = forked.sessionFile;
       console.warn(`[session-init] forked session created: file=${forked.sessionFile}`);
+    }
+  }
+  if (!isNewSession && parentSessionKey && parentSessionKey !== sessionKey) {
+    const parentEntry = sessionStore[parentSessionKey];
+    const sessionFile = resolveSessionFilePath(sessionEntry.sessionId, sessionEntry);
+    if (parentEntry && sessionFile && !readSessionParentHeader(sessionFile)) {
+      const merged = mergeSessionFromParent({
+        parentEntry,
+        childEntry: sessionEntry,
+        limit: slackThreadParentLimit,
+      });
+      if (merged) {
+        sessionId = merged.sessionId;
+        sessionEntry.sessionId = merged.sessionId;
+        sessionEntry.sessionFile = merged.sessionFile;
+      }
     }
   }
   if (!sessionEntry.sessionFile) {
