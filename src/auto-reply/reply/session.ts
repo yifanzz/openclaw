@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { CURRENT_SESSION_VERSION, SessionManager } from "@mariozechner/pi-coding-agent";
 import { limitHistoryTurns } from "../../agents/pi-embedded-runner/history.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
@@ -109,6 +110,37 @@ function resolveSlackThreadInheritParent(params: {
   );
 }
 
+function resolveSlackThreadIncludeToolResults(params: {
+  cfg: MoltbotConfig;
+  accountId?: string | null;
+}): boolean {
+  const slack = params.cfg.channels?.slack;
+  if (!slack || typeof slack !== "object") return true;
+  const accountId = params.accountId?.trim();
+  const accounts =
+    slack && typeof slack === "object" && "accounts" in slack ? slack.accounts : undefined;
+  const account =
+    accountId && accounts && typeof accounts === "object"
+      ? ((
+          accounts as Record<
+            string,
+            { thread?: { inheritParentIncludeToolResults?: boolean } } | undefined
+          >
+        )[accountId] ??
+        (
+          accounts as Record<
+            string,
+            { thread?: { inheritParentIncludeToolResults?: boolean } } | undefined
+          >
+        )[accountId.toLowerCase()])
+      : undefined;
+  const configured =
+    account?.thread?.inheritParentIncludeToolResults ??
+    (slack as { thread?: { inheritParentIncludeToolResults?: boolean } }).thread
+      ?.inheritParentIncludeToolResults;
+  return configured !== undefined ? Boolean(configured) : true;
+}
+
 const THREAD_SESSION_SUFFIX_REGEX = /^(.*)(?::(?:thread|topic):[^:]+)$/i;
 
 function inferParentSessionKey(sessionKey?: string | null): string | undefined {
@@ -210,9 +242,49 @@ function isPiMessage(value: unknown): value is { role: "user" | "assistant" | "t
   return role === "user" || role === "assistant" || role === "toolResult";
 }
 
+function stripAssistantToolCalls(
+  message: Extract<AgentMessage, { role: "assistant" }>,
+): Extract<AgentMessage, { role: "assistant" }> | null {
+  const content = message.content;
+  if (!Array.isArray(content)) return message;
+  const nextContent = content.filter((block) => {
+    if (!block || typeof block !== "object") return true;
+    const type = (block as { type?: unknown }).type;
+    return type !== "toolCall" && type !== "toolUse" && type !== "functionCall";
+  });
+  if (nextContent.length === 0) return null;
+  if (nextContent.length === content.length) return message;
+  return { ...message, content: nextContent };
+}
+
+function filterParentMessages(params: {
+  messages: AgentMessage[];
+  includeToolResults: boolean;
+}): AgentMessage[] {
+  if (params.includeToolResults) return params.messages;
+  const filtered: AgentMessage[] = [];
+  for (const message of params.messages) {
+    if (!message || typeof message !== "object") continue;
+    const role = (message as { role?: unknown }).role;
+    if (role === "toolResult") continue;
+    if (role === "assistant") {
+      const stripped = stripAssistantToolCalls(
+        message as Extract<AgentMessage, { role: "assistant" }>,
+      );
+      if (stripped) filtered.push(stripped);
+      continue;
+    }
+    if (role === "user") {
+      filtered.push(message);
+    }
+  }
+  return filtered;
+}
+
 function forkSessionFromParentWithLimit(params: {
   parentEntry: SessionEntry;
-  limit: number;
+  limit?: number;
+  includeToolResults?: boolean;
 }): { sessionId: string; sessionFile: string } | null {
   const parentSessionFile = resolveSessionFilePath(
     params.parentEntry.sessionId,
@@ -223,9 +295,13 @@ function forkSessionFromParentWithLimit(params: {
     const parent = SessionManager.open(parentSessionFile);
     const parentContext = parent.buildSessionContext();
     const limitedMessages = limitHistoryTurns(parentContext.messages, params.limit);
+    const filteredMessages = filterParentMessages({
+      messages: limitedMessages,
+      includeToolResults: params.includeToolResults ?? true,
+    });
 
     const forked = SessionManager.create(parent.getCwd(), parent.getSessionDir());
-    for (const message of limitedMessages) {
+    for (const message of filteredMessages) {
       if (!isPiMessage(message)) continue;
       forked.appendMessage(message);
     }
@@ -244,6 +320,7 @@ function mergeSessionFromParent(params: {
   parentEntry: SessionEntry;
   childEntry: SessionEntry;
   limit?: number;
+  includeToolResults?: boolean;
 }): { sessionId: string; sessionFile: string } | null {
   const parentSessionFile = resolveSessionFilePath(
     params.parentEntry.sessionId,
@@ -266,9 +343,13 @@ function mergeSessionFromParent(params: {
     const limitedParent = params.limit
       ? limitHistoryTurns(parentContext.messages, params.limit)
       : parentContext.messages;
+    const filteredParent = filterParentMessages({
+      messages: limitedParent,
+      includeToolResults: params.includeToolResults ?? true,
+    });
 
     const merged = SessionManager.create(child.getCwd(), child.getSessionDir());
-    for (const message of limitedParent) {
+    for (const message of filteredParent) {
       if (!isPiMessage(message)) continue;
       merged.appendMessage(message);
     }
@@ -323,6 +404,10 @@ export async function initSessionState(params: {
     providerId === "slack"
       ? resolveSlackThreadParentLimit({ cfg, accountId: ctx.AccountId ?? undefined })
       : undefined;
+  const slackThreadIncludeToolResults =
+    providerId === "slack"
+      ? resolveSlackThreadIncludeToolResults({ cfg, accountId: ctx.AccountId ?? undefined })
+      : true;
 
   const sessionStore: Record<string, SessionEntry> = loadSessionStore(storePath);
   let sessionKey: string | undefined;
@@ -529,10 +614,11 @@ export async function initSessionState(params: {
         `parentTokens=${parentEntry?.totalTokens ?? "?"}`,
     );
     const forked =
-      parentEntry && slackThreadParentLimit
+      parentEntry && (slackThreadParentLimit || !slackThreadIncludeToolResults)
         ? forkSessionFromParentWithLimit({
             parentEntry,
             limit: slackThreadParentLimit,
+            includeToolResults: slackThreadIncludeToolResults,
           })
         : forkSessionFromParent({
             parentEntry,
@@ -552,6 +638,7 @@ export async function initSessionState(params: {
         parentEntry,
         childEntry: sessionEntry,
         limit: slackThreadParentLimit,
+        includeToolResults: slackThreadIncludeToolResults,
       });
       if (merged) {
         sessionId = merged.sessionId;
