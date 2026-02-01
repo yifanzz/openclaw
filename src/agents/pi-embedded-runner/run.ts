@@ -304,6 +304,8 @@ export async function runEmbeddedPiAgent(
       }
 
       let overflowCompactionAttempted = false;
+      let overflowCompactionFailed = false;
+      let overflowCompactionSucceeded = false;
       try {
         while (true) {
           attemptedThinking.add(thinkLevel);
@@ -400,20 +402,34 @@ export async function runEmbeddedPiAgent(
                   ownerNumbers: params.ownerNumbers,
                 });
                 if (compactResult.compacted) {
+                  overflowCompactionSucceeded = true;
                   log.info(`auto-compaction succeeded for ${provider}/${modelId}; retrying prompt`);
                   continue;
                 }
+                overflowCompactionFailed = true;
                 log.warn(
                   `auto-compaction failed for ${provider}/${modelId}: ${compactResult.reason ?? "nothing to compact"}`,
                 );
               }
               const kind = isCompactionFailure ? "compaction_failure" : "context_overflow";
+              let errorTextForUser =
+                "Context overflow: prompt too large for the model. " +
+                "Try again with less input or a larger-context model.";
+              if (overflowCompactionFailed || isCompactionFailure) {
+                errorTextForUser =
+                  "Context overflow: prompt too large for the model. " +
+                  "Auto-compaction failed and was aborted to preserve history. " +
+                  "Please reduce input or run /compact.";
+              } else if (overflowCompactionAttempted || overflowCompactionSucceeded) {
+                errorTextForUser =
+                  "Context overflow: prompt too large for the model. " +
+                  "Auto-compaction already ran, but the prompt is still too large. " +
+                  "Please reduce input or use a larger-context model.";
+              }
               return {
                 payloads: [
                   {
-                    text:
-                      "Context overflow: prompt too large for the model. " +
-                      "Try again with less input or a larger-context model.",
+                    text: errorTextForUser,
                     isError: true,
                   },
                 ],
