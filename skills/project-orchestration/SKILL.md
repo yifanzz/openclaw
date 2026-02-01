@@ -48,11 +48,27 @@ Before starting work on a project:
 # Check if locked
 if [ -f .openclaw/.lock ]; then
   cat .openclaw/.lock  # See who has it
-  # Wait or break stale lock (>2 hours old)
 fi
+```
 
-# Acquire lock
-echo '{"agent":"steve","started":"2026-01-30T15:00:00Z","task":"fix auth"}' > .openclaw/.lock
+**Lock format:**
+```json
+{
+  "agent": "steve",
+  "sessionKey": "agent:main:slack:channel:c0aam7b786p",
+  "started": "2026-01-30T15:00:00Z",
+  "task": "fix auth"
+}
+```
+
+**Stale lock detection:**
+- If `sessionKey` matches your current session → you hold the lock, continue
+- If lock is >2 hours old → likely stale, safe to break
+- If `sessionKey` refers to a session that no longer exists → stale
+
+**Acquire lock:**
+```bash
+echo '{"agent":"steve","sessionKey":"<your-session-key>","started":"2026-01-30T15:00:00Z","task":"fix auth"}' > .openclaw/.lock
 ```
 
 Release lock when done or on error.
@@ -65,8 +81,8 @@ Release lock when done or on error.
 # Read current state
 cat project/.openclaw/STATUS.md
 
-# Acquire lock
-echo '{"agent":"main","started":"...","task":"..."}' > project/.openclaw/.lock
+# Acquire lock (include your sessionKey for stale detection)
+echo '{"agent":"main","sessionKey":"<your-session-key>","started":"...","task":"..."}' > project/.openclaw/.lock
 
 # Spawn coding agent
 bash pty:true workdir:~/project background:true \
