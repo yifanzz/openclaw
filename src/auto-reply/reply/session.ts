@@ -63,7 +63,7 @@ function normalizeTurnLimit(value: unknown): number | undefined {
 }
 
 function resolveSlackThreadParentLimit(params: {
-  cfg: MoltbotConfig;
+  cfg: OpenClawConfig;
   accountId?: string | null;
 }): number | undefined {
   const slack = params.cfg.channels?.slack;
@@ -87,7 +87,7 @@ function resolveSlackThreadParentLimit(params: {
 }
 
 function resolveSlackThreadInheritParent(params: {
-  cfg: MoltbotConfig;
+  cfg: OpenClawConfig;
   accountId?: string | null;
 }): boolean {
   const slack = params.cfg.channels?.slack;
@@ -111,7 +111,7 @@ function resolveSlackThreadInheritParent(params: {
 }
 
 function resolveSlackThreadIncludeToolResults(params: {
-  cfg: MoltbotConfig;
+  cfg: OpenClawConfig;
   accountId?: string | null;
 }): boolean {
   const slack = params.cfg.channels?.slack;
