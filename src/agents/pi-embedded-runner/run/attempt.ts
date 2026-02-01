@@ -88,6 +88,68 @@ import { splitSdkTools } from "../tool-split.js";
 import { describeUnknownError, mapThinkingLevel } from "../utils.js";
 import { detectAndLoadPromptImages } from "./images.js";
 
+function initializeEmbeddedExtensions(
+  session: Awaited<ReturnType<typeof createAgentSession>>["session"],
+): void {
+  const extensionRunner = session.extensionRunner;
+  if (!extensionRunner) return;
+  // Embedded runs skip CLI modes; initialize the runner so ctx.model is available in hooks.
+  extensionRunner.initialize(
+    {
+      sendMessage: (message, options) => {
+        session.sendCustomMessage(message, options).catch((err) => {
+          log.warn(`Extension sendMessage failed: ${String(err)}`);
+        });
+      },
+      sendUserMessage: (content, options) => {
+        session.sendUserMessage(content, options).catch((err) => {
+          log.warn(`Extension sendUserMessage failed: ${String(err)}`);
+        });
+      },
+      appendEntry: (customType, data) => {
+        session.sessionManager.appendCustomEntry(customType, data);
+      },
+      setSessionName: (name) => {
+        session.sessionManager.appendSessionInfo(name);
+      },
+      getSessionName: () => session.sessionManager.getSessionName(),
+      setLabel: (entryId, label) => {
+        session.sessionManager.appendLabelChange(entryId, label);
+      },
+      getActiveTools: () => session.getActiveToolNames(),
+      getAllTools: () => session.getAllTools(),
+      setActiveTools: (toolNames) => session.setActiveToolsByName(toolNames),
+      setModel: async (model) => {
+        const key = await session.modelRegistry.getApiKey(model);
+        if (!key) return false;
+        await session.setModel(model);
+        return true;
+      },
+      getThinkingLevel: () => session.thinkingLevel,
+      setThinkingLevel: (level) => session.setThinkingLevel(level),
+    },
+    {
+      getModel: () => session.model,
+      isIdle: () => !session.isStreaming,
+      abort: () => session.abort(),
+      hasPendingMessages: () => session.pendingMessageCount > 0,
+      shutdown: () => {},
+      getContextUsage: () => session.getContextUsage(),
+      compact: (options) => {
+        void (async () => {
+          try {
+            const result = await session.compact(options?.customInstructions);
+            options?.onComplete?.(result);
+          } catch (error) {
+            const err = error instanceof Error ? error : new Error(String(error));
+            options?.onError?.(err);
+          }
+        })();
+      },
+    },
+  );
+}
+
 export function injectHistoryImagesIntoMessages(
   messages: AgentMessage[],
   historyImagesByIndex: Map<number, ImageContent[]>,
@@ -489,6 +551,7 @@ export async function runEmbeddedAttempt(
       if (!session) {
         throw new Error("Embedded agent session missing");
       }
+      initializeEmbeddedExtensions(session);
       const activeSession = session;
       const cacheTrace = createCacheTrace({
         cfg: params.config,

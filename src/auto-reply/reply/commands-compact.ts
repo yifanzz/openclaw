@@ -130,5 +130,8 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     ? `${compactLabel}: ${reason} • ${contextSummary}`
     : `${compactLabel} • ${contextSummary}`;
   enqueueSystemEvent(line, { sessionKey: params.sessionKey });
-  return { shouldContinue: false, reply: { text: `⚙️ ${line}` } };
+  const failureHint = result.ok
+    ? ""
+    : " History preserved. Please reduce input or start a new session.";
+  return { shouldContinue: false, reply: { text: `⚙️ ${line}${failureHint}` } };
 };
