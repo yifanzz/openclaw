@@ -1,3 +1,4 @@
+import type { SlackActionMiddlewareArgs } from "@slack/bolt";
 import type { SlackMonitorContext } from "../context.js";
 
 const EXEC_APPROVAL_ACTIONS = new Set(["exec_approve_once", "exec_approve_always", "exec_deny"]);
@@ -17,8 +18,14 @@ function mapActionToDecision(actionId: string): string | null {
 
 export function registerSlackBlockActions(params: { ctx: SlackMonitorContext }) {
   const { ctx } = params;
+  const app = ctx.app as { action?: unknown };
+  if (typeof app.action !== "function") {
+    return;
+  }
 
-  ctx.app.action(/^exec_/, async ({ action, ack, body, client }) => {
+  app.action(/^exec_/, async (args: SlackActionMiddlewareArgs) => {
+    const { action, ack, body } = args;
+    const { client } = ctx.app;
     await ack();
 
     // Type guard for button actions
