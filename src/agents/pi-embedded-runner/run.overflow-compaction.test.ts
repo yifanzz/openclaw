@@ -241,6 +241,9 @@ describe("overflow compaction in run loop", () => {
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
     expect(result.meta.error?.kind).toBe("context_overflow");
     expect(result.payloads?.[0]?.isError).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain(
+      "Auto-compaction failed and was aborted to preserve history.",
+    );
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("auto-compaction failed"));
   });
 

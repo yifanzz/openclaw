@@ -1,10 +1,21 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { describe, expect, it } from "vitest";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../compaction.js", async (importActual) => {
+  const actual = await importActual<typeof import("../compaction.js")>();
+  return {
+    ...actual,
+    summarizeInStages: vi.fn(),
+  };
+});
+
 import {
   getCompactionSafeguardRuntime,
   setCompactionSafeguardRuntime,
 } from "./compaction-safeguard-runtime.js";
-import { __testing } from "./compaction-safeguard.js";
+import compactionSafeguardExtension, { __testing } from "./compaction-safeguard.js";
+import { summarizeInStages } from "../compaction.js";
 
 const {
   collectToolFailures,
@@ -247,5 +258,129 @@ describe("compaction-safeguard runtime registry", () => {
     setCompactionSafeguardRuntime(sm2, { maxHistoryShare: 0.8 });
     expect(getCompactionSafeguardRuntime(sm1)).toEqual({ maxHistoryShare: 0.3 });
     expect(getCompactionSafeguardRuntime(sm2)).toEqual({ maxHistoryShare: 0.8 });
+  });
+});
+
+describe("compaction-safeguard extension behavior", () => {
+  const fallbackSummary =
+    "Context contained 12 messages (0 oversized). Summary unavailable due to size limits.";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const buildContext = () => {
+    const model = {
+      id: "test-model",
+      provider: "openai",
+      contextWindow: 200_000,
+    } as ExtensionContext["model"];
+    return {
+      model,
+      modelRegistry: {
+        getAvailable: async () => [model],
+        getApiKey: async () => "test-key",
+      },
+      sessionManager: {},
+    } as ExtensionContext;
+  };
+
+  type CompactionEvent = {
+    preparation: {
+      fileOps: { read: Set<string>; edited: Set<string>; written: Set<string> };
+      messagesToSummarize: AgentMessage[];
+      turnPrefixMessages: AgentMessage[];
+      settings: { reserveTokens: number };
+      isSplitTurn: boolean;
+      previousSummary?: string;
+      firstKeptEntryId: string;
+    };
+    customInstructions?: string;
+    signal: AbortSignal;
+  };
+
+  const buildEvent = (overrides?: Partial<CompactionEvent>): CompactionEvent => {
+    const baseEvent: CompactionEvent = {
+      preparation: {
+        fileOps: {
+          read: new Set<string>(),
+          edited: new Set<string>(),
+          written: new Set<string>(),
+        },
+        messagesToSummarize: [],
+        turnPrefixMessages: [],
+        settings: { reserveTokens: 1000 },
+        isSplitTurn: false,
+        previousSummary: undefined,
+        firstKeptEntryId: "entry-1",
+      },
+      customInstructions: undefined,
+      signal: new AbortController().signal,
+    };
+    return { ...baseEvent, ...overrides };
+  };
+
+  it("cancels compaction when summary falls back", async () => {
+    const mockedSummarize = vi.mocked(summarizeInStages);
+    mockedSummarize.mockResolvedValueOnce(fallbackSummary);
+
+    let handler: ((event: CompactionEvent, ctx: ExtensionContext) => Promise<unknown>) | undefined;
+    const api = {
+      on: (name: string, fn: unknown) => {
+        if (name === "session_before_compact") {
+          handler = fn as typeof handler;
+        }
+      },
+    } as ExtensionAPI;
+
+    compactionSafeguardExtension(api);
+
+    if (!handler) {
+      throw new Error("missing session_before_compact handler");
+    }
+
+    const result = await handler(buildEvent(), buildContext());
+    expect(result).toEqual({ cancel: true });
+  });
+
+  it("cancels compaction when prefix summary falls back", async () => {
+    const mockedSummarize = vi.mocked(summarizeInStages);
+    mockedSummarize.mockResolvedValueOnce("ok summary").mockResolvedValueOnce(fallbackSummary);
+
+    let handler: ((event: CompactionEvent, ctx: ExtensionContext) => Promise<unknown>) | undefined;
+    const api = {
+      on: (name: string, fn: unknown) => {
+        if (name === "session_before_compact") {
+          handler = fn as typeof handler;
+        }
+      },
+    } as ExtensionAPI;
+
+    compactionSafeguardExtension(api);
+
+    if (!handler) {
+      throw new Error("missing session_before_compact handler");
+    }
+
+    const result = await handler(
+      buildEvent({
+        preparation: {
+          fileOps: {
+            read: new Set<string>(),
+            edited: new Set<string>(),
+            written: new Set<string>(),
+          },
+          messagesToSummarize: [],
+          turnPrefixMessages: [{ role: "user", content: "prefix", timestamp: Date.now() }],
+          settings: { reserveTokens: 1000 },
+          isSplitTurn: true,
+          previousSummary: undefined,
+          firstKeptEntryId: "entry-1",
+        },
+      }),
+      buildContext(),
+    );
+    expect(result).toEqual({ cancel: true });
+    expect(mockedSummarize).toHaveBeenCalledTimes(2);
   });
 });
