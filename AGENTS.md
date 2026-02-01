@@ -2,6 +2,7 @@
 
 - Repo: https://github.com/openclaw/openclaw
 - GitHub issues/comments/PR comments: use literal multiline strings or `-F - <<'EOF'` (or $'...') for real newlines; never embed "\\n".
+- Local divergence notes live in `DIVERGENCE.md`; review during upstream rebases.
 
 ## Project Structure & Module Organization
 
