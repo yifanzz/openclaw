@@ -100,6 +100,54 @@ process action:kill sessionId:XXX
 
 **Model:** `gpt-5.2-codex` is the default (set in ~/.codex/config.toml)
 
+### Output hygiene (Codex CLI)
+
+Codex `--json` streams JSONL events (tool calls, thinking, status updates).
+For caller-facing output, **return only the final assistant message** and drop
+tool output, intermediate logs, and reasoning. Keep raw logs only if asked.
+
+Default pattern: write the full JSONL stream to a trace file, but only return
+the final assistant message to the caller. Use this for debugging without
+polluting normal output.
+
+```bash
+# Trace file (restrict perms)
+umask 077
+TRACE_DIR="${TMPDIR:-/tmp}/codex-traces"
+mkdir -p "$TRACE_DIR"
+TRACE_FILE="$TRACE_DIR/$(date +%Y%m%d-%H%M%S)-$$.jsonl"
+
+# Outcome-only (jq)
+codex exec --json "Your prompt" \
+  | tee "$TRACE_FILE" \
+  | jq -r 'select(.item.type|test("message")) | .item.text' \
+  | tail -n 1
+
+# Outcome-only (python fallback, no jq)
+codex exec --json "Your prompt" \
+  | tee "$TRACE_FILE" \
+  | python - <<'PY'
+import sys, json
+last = ""
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except Exception:
+        continue
+    item = obj.get("item") or {}
+    t = str(item.get("type") or "").lower()
+    if "message" in t and isinstance(item.get("text"), str):
+        last = item["text"]
+print(last)
+PY
+```
+
+When debugging, include the trace path (or a trace id) in your response so it
+can be retrieved, but do not inline the JSONL unless explicitly asked.
+
 ### Flags
 
 | Flag            | Effect                                             |
