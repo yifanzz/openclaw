@@ -51,9 +51,10 @@
 - Convenience: `scripts/restart-gateway-dev.sh` runs `pnpm build` then restarts the gateway.
 - Node remains supported for running built output (`dist/*`) and production installs.
 - Mac packaging (dev): `scripts/package-mac-app.sh` defaults to current arch. Release checklist: `docs/platforms/mac/release.md`.
-- Type-check/build: `pnpm build`
+- Type-check/build: `pnpm build` (emit) or `pnpm typecheck` (no emit)
 - Lint/format: `pnpm lint` (oxlint), `pnpm format` (oxfmt)
 - Tests: `pnpm test` (vitest); coverage: `pnpm test:coverage`
+- Proactively run typechecks + tests after logic changes: `pnpm typecheck` and `pnpm test`.
 
 ## Coding Style & Naming Conventions
 
