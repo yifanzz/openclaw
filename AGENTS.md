@@ -56,6 +56,7 @@
 - Prefer Bun for TypeScript execution (scripts, dev, tests): `bun <file.ts>` / `bunx <tool>`.
 - Run CLI in dev: `pnpm openclaw ...` (bun) or `pnpm dev`.
 - After gateway-affecting changes (non-macOS app runs), restart: `pnpm openclaw gateway restart`.
+- Convenience: `scripts/restart-gateway-dev.sh` runs `pnpm build` then restarts the gateway.
 - Node remains supported for running built output (`dist/*`) and production installs.
 - Mac packaging (dev): `scripts/package-mac-app.sh` defaults to current arch. Release checklist: `docs/platforms/mac/release.md`.
 - Type-check/build: `pnpm build`
