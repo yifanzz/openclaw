@@ -12,8 +12,6 @@ import {
   summarizeInStages,
 } from "../compaction.js";
 import { getCompactionSafeguardRuntime } from "./compaction-safeguard-runtime.js";
-const FALLBACK_SUMMARY =
-  "Summary unavailable due to context limits. Older messages were truncated.";
 const TURN_PREFIX_INSTRUCTIONS =
   "This summary covers the prefix of a split turn. Focus on the original request," +
   " early progress, and any details needed to understand the retained suffix.";
@@ -158,6 +156,25 @@ function formatFileOperations(readFiles: string[], modifiedFiles: string[]): str
   return `\n\n${sections.join("\n\n")}`;
 }
 
+/**
+ * Extract model info from the most recent assistant message.
+ * Used as fallback when ctx.model is unavailable (SDK embedding issue).
+ */
+function extractModelFromMessages(
+  messages: AgentMessage[],
+): { provider: string; modelId: string } | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === "assistant") {
+      const assistant = msg as { provider?: string; model?: string };
+      if (assistant.provider && assistant.model) {
+        return { provider: assistant.provider, modelId: assistant.model };
+      }
+    }
+  }
+  return null;
+}
+
 export default function compactionSafeguardExtension(api: ExtensionAPI): void {
   api.on("session_before_compact", async (event, ctx) => {
     const { preparation, customInstructions, signal } = event;
@@ -168,31 +185,30 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       ...preparation.turnPrefixMessages,
     ]);
     const toolFailureSection = formatToolFailuresSection(toolFailures);
-    const fallbackSummary = `${FALLBACK_SUMMARY}${toolFailureSection}${fileOpsSummary}`;
-
-    const model = ctx.model;
+    // Try ctx.model first, fall back to extracting from messages
+    // (workaround for SDK embedding issue where ctx.model is undefined)
+    let model = ctx.model;
     if (!model) {
-      return {
-        compaction: {
-          summary: fallbackSummary,
-          firstKeptEntryId: preparation.firstKeptEntryId,
-          tokensBefore: preparation.tokensBefore,
-          details: { readFiles, modifiedFiles },
-        },
-      };
+      const allMessages = [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
+      const extracted = extractModelFromMessages(allMessages);
+      if (extracted) {
+        // Use modelRegistry to get the full model object
+        const availableModels = await ctx.modelRegistry.getAvailable();
+        model = availableModels.find(
+          (m) => m.provider === extracted.provider && m.id === extracted.modelId,
+        );
+      }
+    }
+
+    if (!model) {
+      console.warn(
+        "Compaction safeguard: no model available (ctx.model undefined and no assistant messages found)",
+      );
+      return { cancel: true };
     }
 
     const apiKey = await ctx.modelRegistry.getApiKey(model);
-    if (!apiKey) {
-      return {
-        compaction: {
-          summary: fallbackSummary,
-          firstKeptEntryId: preparation.firstKeptEntryId,
-          tokensBefore: preparation.tokensBefore,
-          details: { readFiles, modifiedFiles },
-        },
-      };
-    }
+    if (!apiKey) return { cancel: true };
 
     try {
       const runtime = getCompactionSafeguardRuntime(ctx.sessionManager);
@@ -289,6 +305,13 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         customInstructions,
         previousSummary: effectivePreviousSummary,
       });
+      const isFallbackSummary =
+        historySummary.startsWith("Context contained ") &&
+        historySummary.includes("Summary unavailable");
+      if (isFallbackSummary) {
+        console.warn("Compaction safeguard: summary fallback detected; aborting compaction.");
+        return { cancel: true };
+      }
 
       let summary = historySummary;
       if (preparation.isSplitTurn && turnPrefixMessages.length > 0) {
@@ -303,6 +326,15 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           customInstructions: TURN_PREFIX_INSTRUCTIONS,
           previousSummary: undefined,
         });
+        const isPrefixFallback =
+          prefixSummary.startsWith("Context contained ") &&
+          prefixSummary.includes("Summary unavailable");
+        if (isPrefixFallback) {
+          console.warn(
+            "Compaction safeguard: prefix summary fallback detected; aborting compaction.",
+          );
+          return { cancel: true };
+        }
         summary = `${historySummary}\n\n---\n\n**Turn Context (split turn):**\n\n${prefixSummary}`;
       }
 
@@ -319,18 +351,11 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       };
     } catch (error) {
       console.warn(
-        `Compaction summarization failed; truncating history: ${
+        `Compaction summarization failed; aborting compaction: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
-      return {
-        compaction: {
-          summary: fallbackSummary,
-          firstKeptEntryId: preparation.firstKeptEntryId,
-          tokensBefore: preparation.tokensBefore,
-          details: { readFiles, modifiedFiles },
-        },
-      };
+      return { cancel: true };
     }
   });
 }
