@@ -103,6 +103,68 @@ export type CompactEmbeddedPiSessionParams = {
   ownerNumbers?: string[];
 };
 
+function initializeEmbeddedExtensions(
+  session: Awaited<ReturnType<typeof createAgentSession>>["session"],
+): void {
+  const extensionRunner = session.extensionRunner;
+  if (!extensionRunner) return;
+  // Embedded runs skip CLI modes; initialize the runner so ctx.model is available in hooks.
+  extensionRunner.initialize(
+    {
+      sendMessage: (message, options) => {
+        session.sendCustomMessage(message, options).catch((err) => {
+          log.warn(`Extension sendMessage failed: ${String(err)}`);
+        });
+      },
+      sendUserMessage: (content, options) => {
+        session.sendUserMessage(content, options).catch((err) => {
+          log.warn(`Extension sendUserMessage failed: ${String(err)}`);
+        });
+      },
+      appendEntry: (customType, data) => {
+        session.sessionManager.appendCustomEntry(customType, data);
+      },
+      setSessionName: (name) => {
+        session.sessionManager.appendSessionInfo(name);
+      },
+      getSessionName: () => session.sessionManager.getSessionName(),
+      setLabel: (entryId, label) => {
+        session.sessionManager.appendLabelChange(entryId, label);
+      },
+      getActiveTools: () => session.getActiveToolNames(),
+      getAllTools: () => session.getAllTools(),
+      setActiveTools: (toolNames) => session.setActiveToolsByName(toolNames),
+      setModel: async (model) => {
+        const key = await session.modelRegistry.getApiKey(model);
+        if (!key) return false;
+        await session.setModel(model);
+        return true;
+      },
+      getThinkingLevel: () => session.thinkingLevel,
+      setThinkingLevel: (level) => session.setThinkingLevel(level),
+    },
+    {
+      getModel: () => session.model,
+      isIdle: () => !session.isStreaming,
+      abort: () => session.abort(),
+      hasPendingMessages: () => session.pendingMessageCount > 0,
+      shutdown: () => {},
+      getContextUsage: () => session.getContextUsage(),
+      compact: (options) => {
+        void (async () => {
+          try {
+            const result = await session.compact(options?.customInstructions);
+            options?.onComplete?.(result);
+          } catch (error) {
+            const err = error instanceof Error ? error : new Error(String(error));
+            options?.onError?.(err);
+          }
+        })();
+      },
+    },
+  );
+}
+
 /**
  * Core compaction logic without lane queueing.
  * Use this when already inside a session/global lane to avoid deadlocks.
@@ -410,6 +472,7 @@ export async function compactEmbeddedPiSessionDirect(
         settingsManager,
         resourceLoader,
       });
+      initializeEmbeddedExtensions(session);
 
       try {
         const prior = await sanitizeSessionHistory({
