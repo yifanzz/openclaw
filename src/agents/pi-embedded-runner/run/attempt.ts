@@ -1,11 +1,15 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { streamSimple } from "@mariozechner/pi-ai";
-import { createAgentSession, SessionManager, SettingsManager } from "@mariozechner/pi-coding-agent";
-
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  SessionManager,
+  SettingsManager,
+} from "@mariozechner/pi-coding-agent";
+import fs from "node:fs/promises";
+import os from "node:os";
+import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 import { resolveHeartbeatPrompt } from "../../../auto-reply/heartbeat.js";
 import { resolveChannelCapabilities } from "../../../config/channel-capabilities.js";
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
@@ -28,12 +32,10 @@ import {
   listChannelSupportedActions,
   resolveChannelMessageToolHints,
 } from "../../channel-tools.js";
-import { createAnthropicPayloadLogger } from "../../anthropic-payload-log.js";
-import { resolveOpenClawAgentDir } from "../../agent-paths.js";
-import { resolveSessionAgentIds } from "../../agent-scope.js";
-import { makeBootstrapWarn, resolveBootstrapContextForRun } from "../../bootstrap-files.js";
 import { resolveOpenClawDocsPath } from "../../docs-path.js";
+import { isTimeoutError } from "../../failover-error.js";
 import { resolveModelAuthMode } from "../../model-auth.js";
+import { resolveDefaultModelForAgent } from "../../model-selection.js";
 import {
   isCloudCodeAssistFormatError,
   resolveBootstrapMaxChars,
@@ -45,11 +47,12 @@ import {
   ensurePiCompactionReserveTokens,
   resolveCompactionReserveTokensFloor,
 } from "../../pi-settings.js";
+import { toClientToolDefinitions } from "../../pi-tool-definition-adapter.js";
 import { createOpenClawCodingTools } from "../../pi-tools.js";
 import { resolveSandboxContext } from "../../sandbox.js";
 import { repairSessionFileIfNeeded } from "../../session-file-repair.js";
+import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
-import { resolveTranscriptPolicy } from "../../transcript-policy.js";
 import { acquireSessionWriteLock } from "../../session-write-lock.js";
 import {
   applySkillEnvOverrides,
@@ -57,14 +60,14 @@ import {
   loadWorkspaceSkillEntries,
   resolveSkillsPromptForRun,
 } from "../../skills.js";
-import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
+import { buildSystemPromptParams } from "../../system-prompt-params.js";
 import { buildSystemPromptReport } from "../../system-prompt-report.js";
-import { resolveDefaultModelForAgent } from "../../model-selection.js";
-
+import { resolveTranscriptPolicy } from "../../transcript-policy.js";
+import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
 import { isAbortError } from "../abort.js";
+import { appendCacheTtlTimestamp, isCacheTtlEligibleProvider } from "../cache-ttl.js";
 import { buildEmbeddedExtensionPaths } from "../extensions.js";
 import { applyExtraParamsToAgent } from "../extra-params.js";
-import { appendCacheTtlTimestamp, isCacheTtlEligibleProvider } from "../cache-ttl.js";
 import {
   logToolSchemasForGoogle,
   sanitizeSessionHistory,
@@ -81,80 +84,14 @@ import {
 import { buildEmbeddedSandboxInfo } from "../sandbox-info.js";
 import { prewarmSessionFile, trackSessionManagerAccess } from "../session-manager-cache.js";
 import { prepareSessionManagerForRun } from "../session-manager-init.js";
-import { buildEmbeddedSystemPrompt, createSystemPromptOverride } from "../system-prompt.js";
+import {
+  applySystemPromptOverrideToSession,
+  buildEmbeddedSystemPrompt,
+  createSystemPromptOverride,
+} from "../system-prompt.js";
 import { splitSdkTools } from "../tool-split.js";
-import { toClientToolDefinitions } from "../../pi-tool-definition-adapter.js";
-import { buildSystemPromptParams } from "../../system-prompt-params.js";
 import { describeUnknownError, mapThinkingLevel } from "../utils.js";
-import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
-import { buildTtsSystemPromptHint } from "../../../tts/tts.js";
-import { isTimeoutError } from "../../failover-error.js";
-import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
-import { MAX_IMAGE_BYTES } from "../../../media/constants.js";
-import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 import { detectAndLoadPromptImages } from "./images.js";
-
-function initializeEmbeddedExtensions(
-  session: Awaited<ReturnType<typeof createAgentSession>>["session"],
-): void {
-  const extensionRunner = session.extensionRunner;
-  if (!extensionRunner) return;
-  // Embedded runs skip CLI modes; initialize the runner so ctx.model is available in hooks.
-  extensionRunner.initialize(
-    {
-      sendMessage: (message, options) => {
-        session.sendCustomMessage(message, options).catch((err) => {
-          log.warn(`Extension sendMessage failed: ${String(err)}`);
-        });
-      },
-      sendUserMessage: (content, options) => {
-        session.sendUserMessage(content, options).catch((err) => {
-          log.warn(`Extension sendUserMessage failed: ${String(err)}`);
-        });
-      },
-      appendEntry: (customType, data) => {
-        session.sessionManager.appendCustomEntry(customType, data);
-      },
-      setSessionName: (name) => {
-        session.sessionManager.appendSessionInfo(name);
-      },
-      getSessionName: () => session.sessionManager.getSessionName(),
-      setLabel: (entryId, label) => {
-        session.sessionManager.appendLabelChange(entryId, label);
-      },
-      getActiveTools: () => session.getActiveToolNames(),
-      getAllTools: () => session.getAllTools(),
-      setActiveTools: (toolNames) => session.setActiveToolsByName(toolNames),
-      setModel: async (model) => {
-        const key = await session.modelRegistry.getApiKey(model);
-        if (!key) return false;
-        await session.setModel(model);
-        return true;
-      },
-      getThinkingLevel: () => session.thinkingLevel,
-      setThinkingLevel: (level) => session.setThinkingLevel(level),
-    },
-    {
-      getModel: () => session.model,
-      isIdle: () => !session.isStreaming,
-      abort: () => session.abort(),
-      hasPendingMessages: () => session.pendingMessageCount > 0,
-      shutdown: () => {},
-      getContextUsage: () => session.getContextUsage(),
-      compact: (options) => {
-        void (async () => {
-          try {
-            const result = await session.compact(options?.customInstructions);
-            options?.onComplete?.(result);
-          } catch (error) {
-            const err = error instanceof Error ? error : new Error(String(error));
-            options?.onError?.(err);
-          }
-        })();
-      },
-    },
-  );
-}
 
 export function injectHistoryImagesIntoMessages(
   messages: AgentMessage[],
@@ -532,6 +469,14 @@ export async function runEmbeddedAttempt(
 
       const allCustomTools = [...customTools, ...clientToolDefs];
 
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: resolvedWorkspace,
+        agentDir,
+        settingsManager,
+        additionalExtensionPaths,
+      });
+      await resourceLoader.reload();
+
       ({ session } = await createAgentSession({
         cwd: resolvedWorkspace,
         agentDir,
@@ -541,16 +486,14 @@ export async function runEmbeddedAttempt(
         thinkingLevel: mapThinkingLevel(params.thinkLevel),
         tools: builtInTools,
         customTools: allCustomTools,
+        resourceLoader,
         sessionManager,
         settingsManager,
-        skills: [],
-        contextFiles: [],
-        additionalExtensionPaths,
       }));
       if (!session) {
         throw new Error("Embedded agent session missing");
       }
-      initializeEmbeddedExtensions(session);
+      applySystemPromptOverrideToSession(session, systemPrompt);
       const activeSession = session;
       const cacheTrace = createCacheTrace({
         cfg: params.config,
