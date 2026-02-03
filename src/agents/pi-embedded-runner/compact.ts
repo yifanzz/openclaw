@@ -1,33 +1,35 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-
 import {
   createAgentSession,
+  DefaultResourceLoader,
   estimateTokens,
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
-
-import { resolveHeartbeatPrompt } from "../../auto-reply/heartbeat.js";
+import fs from "node:fs/promises";
+import os from "node:os";
 import type { ReasoningLevel, ThinkLevel } from "../../auto-reply/thinking.js";
-import { listChannelSupportedActions, resolveChannelMessageToolHints } from "../channel-tools.js";
-import { resolveChannelCapabilities } from "../../config/channel-capabilities.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import type { ExecElevatedDefaults } from "../bash-tools.js";
+import type { EmbeddedPiCompactResult } from "./types.js";
+import { resolveHeartbeatPrompt } from "../../auto-reply/heartbeat.js";
+import { resolveChannelCapabilities } from "../../config/channel-capabilities.js";
 import { getMachineDisplayName } from "../../infra/machine-name.js";
+import { type enqueueCommand, enqueueCommandInLane } from "../../process/command-queue.js";
+import { isSubagentSessionKey } from "../../routing/session-key.js";
+import { resolveSignalReactionLevel } from "../../signal/reaction-level.js";
 import { resolveTelegramInlineButtonsScope } from "../../telegram/inline-buttons.js";
 import { resolveTelegramReactionLevel } from "../../telegram/reaction-level.js";
-import { resolveSignalReactionLevel } from "../../signal/reaction-level.js";
-import { type enqueueCommand, enqueueCommandInLane } from "../../process/command-queue.js";
-import { normalizeMessageChannel } from "../../utils/message-channel.js";
-import { isSubagentSessionKey } from "../../routing/session-key.js";
-import { isReasoningTagProvider } from "../../utils/provider-utils.js";
+import { buildTtsSystemPromptHint } from "../../tts/tts.js";
 import { resolveUserPath } from "../../utils.js";
+import { normalizeMessageChannel } from "../../utils/message-channel.js";
+import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
 import { resolveSessionAgentIds } from "../agent-scope.js";
 import { makeBootstrapWarn, resolveBootstrapContextForRun } from "../bootstrap-files.js";
-import { resolveOpenClawDocsPath } from "../docs-path.js";
-import type { ExecElevatedDefaults } from "../bash-tools.js";
+import { listChannelSupportedActions, resolveChannelMessageToolHints } from "../channel-tools.js";
+import { formatUserTime, resolveUserTimeFormat, resolveUserTimezone } from "../date-time.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../defaults.js";
+import { resolveOpenClawDocsPath } from "../docs-path.js";
 import { getApiKeyForModel, resolveModelAuthMode } from "../model-auth.js";
 import { ensureOpenClawModelsJson } from "../models-config.js";
 import {
@@ -42,7 +44,6 @@ import {
 import { createOpenClawCodingTools } from "../pi-tools.js";
 import { resolveSandboxContext } from "../sandbox.js";
 import { guardSessionManager } from "../session-tool-result-guard-wrapper.js";
-import { resolveTranscriptPolicy } from "../transcript-policy.js";
 import { acquireSessionWriteLock } from "../session-write-lock.js";
 import {
   applySkillEnvOverrides,
@@ -51,6 +52,7 @@ import {
   resolveSkillsPromptForRun,
   type SkillSnapshot,
 } from "../skills.js";
+import { resolveTranscriptPolicy } from "../transcript-policy.js";
 import { buildEmbeddedExtensionPaths } from "./extensions.js";
 import {
   logToolSchemasForGoogle,
@@ -63,12 +65,13 @@ import { log } from "./logger.js";
 import { buildModelAliasLines, resolveModel } from "./model.js";
 import { buildEmbeddedSandboxInfo } from "./sandbox-info.js";
 import { prewarmSessionFile, trackSessionManagerAccess } from "./session-manager-cache.js";
-import { buildEmbeddedSystemPrompt, createSystemPromptOverride } from "./system-prompt.js";
+import {
+  applySystemPromptOverrideToSession,
+  buildEmbeddedSystemPrompt,
+  createSystemPromptOverride,
+} from "./system-prompt.js";
 import { splitSdkTools } from "./tool-split.js";
-import type { EmbeddedPiCompactResult } from "./types.js";
-import { formatUserTime, resolveUserTimeFormat, resolveUserTimezone } from "../date-time.js";
 import { describeUnknownError, mapThinkingLevel, resolveExecToolDefaults } from "./utils.js";
-import { buildTtsSystemPromptHint } from "../../tts/tts.js";
 
 export type CompactEmbeddedPiSessionParams = {
   sessionId: string;
@@ -101,68 +104,6 @@ export type CompactEmbeddedPiSessionParams = {
   extraSystemPrompt?: string;
   ownerNumbers?: string[];
 };
-
-function initializeEmbeddedExtensions(
-  session: Awaited<ReturnType<typeof createAgentSession>>["session"],
-): void {
-  const extensionRunner = session.extensionRunner;
-  if (!extensionRunner) return;
-  // Embedded runs skip CLI modes; initialize the runner so ctx.model is available in hooks.
-  extensionRunner.initialize(
-    {
-      sendMessage: (message, options) => {
-        session.sendCustomMessage(message, options).catch((err) => {
-          log.warn(`Extension sendMessage failed: ${String(err)}`);
-        });
-      },
-      sendUserMessage: (content, options) => {
-        session.sendUserMessage(content, options).catch((err) => {
-          log.warn(`Extension sendUserMessage failed: ${String(err)}`);
-        });
-      },
-      appendEntry: (customType, data) => {
-        session.sessionManager.appendCustomEntry(customType, data);
-      },
-      setSessionName: (name) => {
-        session.sessionManager.appendSessionInfo(name);
-      },
-      getSessionName: () => session.sessionManager.getSessionName(),
-      setLabel: (entryId, label) => {
-        session.sessionManager.appendLabelChange(entryId, label);
-      },
-      getActiveTools: () => session.getActiveToolNames(),
-      getAllTools: () => session.getAllTools(),
-      setActiveTools: (toolNames) => session.setActiveToolsByName(toolNames),
-      setModel: async (model) => {
-        const key = await session.modelRegistry.getApiKey(model);
-        if (!key) return false;
-        await session.setModel(model);
-        return true;
-      },
-      getThinkingLevel: () => session.thinkingLevel,
-      setThinkingLevel: (level) => session.setThinkingLevel(level),
-    },
-    {
-      getModel: () => session.model,
-      isIdle: () => !session.isStreaming,
-      abort: () => session.abort(),
-      hasPendingMessages: () => session.pendingMessageCount > 0,
-      shutdown: () => {},
-      getContextUsage: () => session.getContextUsage(),
-      compact: (options) => {
-        void (async () => {
-          try {
-            const result = await session.compact(options?.customInstructions);
-            options?.onComplete?.(result);
-          } catch (error) {
-            const err = error instanceof Error ? error : new Error(String(error));
-            options?.onError?.(err);
-          }
-        })();
-      },
-    },
-  );
-}
 
 /**
  * Core compaction logic without lane queueing.
@@ -447,6 +388,14 @@ export async function compactEmbeddedPiSessionDirect(
         sandboxEnabled: !!sandbox?.enabled,
       });
 
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: resolvedWorkspace,
+        agentDir,
+        settingsManager,
+        additionalExtensionPaths,
+      });
+      await resourceLoader.reload();
+
       const { session } = await createAgentSession({
         cwd: resolvedWorkspace,
         agentDir,
@@ -456,13 +405,11 @@ export async function compactEmbeddedPiSessionDirect(
         thinkingLevel: mapThinkingLevel(params.thinkLevel),
         tools: builtInTools,
         customTools,
+        resourceLoader,
         sessionManager,
         settingsManager,
-        skills: [],
-        contextFiles: [],
-        additionalExtensionPaths,
       });
-      initializeEmbeddedExtensions(session);
+      applySystemPromptOverrideToSession(session, systemPrompt);
 
       try {
         const prior = await sanitizeSessionHistory({
