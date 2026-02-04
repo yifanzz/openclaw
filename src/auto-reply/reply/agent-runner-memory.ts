@@ -37,6 +37,7 @@ export async function runMemoryFlushIfNeeded(params: {
   sessionKey?: string;
   storePath?: string;
   isHeartbeat: boolean;
+  force?: boolean;
 }): Promise<SessionEntry | undefined> {
   const memoryFlushSettings = resolveMemoryFlushSettings(params.cfg);
   if (!memoryFlushSettings) {
@@ -58,22 +59,25 @@ export async function runMemoryFlushIfNeeded(params: {
     return sandboxCfg.workspaceAccess === "rw";
   })();
 
-  const shouldFlushMemory =
+  const baseEligibility =
     memoryFlushSettings &&
     memoryFlushWritable &&
     !params.isHeartbeat &&
-    !isCliProvider(params.followupRun.run.provider, params.cfg) &&
-    shouldRunMemoryFlush({
-      entry:
-        params.sessionEntry ??
-        (params.sessionKey ? params.sessionStore?.[params.sessionKey] : undefined),
-      contextWindowTokens: resolveMemoryFlushContextWindowTokens({
-        modelId: params.followupRun.run.model ?? params.defaultModel,
-        agentCfgContextTokens: params.agentCfgContextTokens,
-      }),
-      reserveTokensFloor: memoryFlushSettings.reserveTokensFloor,
-      softThresholdTokens: memoryFlushSettings.softThresholdTokens,
-    });
+    !isCliProvider(params.followupRun.run.provider, params.cfg);
+  const shouldFlushMemory =
+    baseEligibility &&
+    (params.force ||
+      shouldRunMemoryFlush({
+        entry:
+          params.sessionEntry ??
+          (params.sessionKey ? params.sessionStore?.[params.sessionKey] : undefined),
+        contextWindowTokens: resolveMemoryFlushContextWindowTokens({
+          modelId: params.followupRun.run.model ?? params.defaultModel,
+          agentCfgContextTokens: params.agentCfgContextTokens,
+        }),
+        reserveTokensFloor: memoryFlushSettings.reserveTokensFloor,
+        softThresholdTokens: memoryFlushSettings.softThresholdTokens,
+      }));
 
   if (!shouldFlushMemory) {
     return params.sessionEntry;
