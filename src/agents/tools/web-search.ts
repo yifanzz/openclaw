@@ -1,8 +1,8 @@
 import { Type } from "@sinclair/typebox";
-
 import type { OpenClawConfig } from "../../config/config.js";
-import { formatCliCommand } from "../../cli/command-format.js";
 import type { AnyAgentTool } from "./common.js";
+import { formatCliCommand } from "../../cli/command-format.js";
+import { wrapWebContent } from "../../security/external-content.js";
 import { jsonResult, readNumberParam, readStringParam } from "./common.js";
 import {
   CacheEntry,
@@ -310,6 +310,13 @@ function resolveSiteName(url: string | undefined): string | undefined {
   }
 }
 
+function wrapSearchSnippet(value: string): string {
+  if (!value.trim()) {
+    return value;
+  }
+  return wrapWebContent(value, "web_search");
+}
+
 async function runPerplexitySearch(params: {
   query: string;
   apiKey: string;
@@ -345,7 +352,7 @@ async function runPerplexitySearch(params: {
   }
 
   const data = (await res.json()) as PerplexitySearchResponse;
-  const content = data.choices?.[0]?.message?.content ?? "No response";
+  const content = wrapSearchSnippet(data.choices?.[0]?.message?.content ?? "No response");
   const citations = data.citations ?? [];
 
   return { content, citations };
@@ -439,10 +446,10 @@ async function runWebSearch(params: {
   const mapped = results.map((entry) => ({
     title: entry.title ?? "",
     url: entry.url ?? "",
-    description: entry.description ?? "",
+    description: wrapSearchSnippet(entry.description ?? ""),
     published: entry.age ?? undefined,
     siteName: resolveSiteName(entry.url ?? ""),
-    extra_snippets: entry.extra_snippets ?? [],
+    extra_snippets: (entry.extra_snippets ?? []).map((snippet) => wrapSearchSnippet(snippet)),
   }));
 
   const payload = {
