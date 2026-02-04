@@ -1,15 +1,20 @@
 import type { OpenClawConfig } from "../../config/config.js";
+import type { ElevatedLevel } from "../thinking.js";
 import type { CommandHandler } from "./commands-types.js";
+import { resolveAgentDir, resolveAgentIdFromSessionKey } from "../../agents/agent-scope.js";
+import { resolveSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
 import {
   abortEmbeddedPiRun,
   compactEmbeddedPiSession,
   isEmbeddedPiRunActive,
   waitForEmbeddedPiRunEnd,
 } from "../../agents/pi-embedded.js";
+import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { resolveSessionFilePath } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { formatContextUsageShort, formatTokenCount } from "../status.js";
+import { runMemoryFlushIfNeeded } from "./agent-runner-memory.js";
 import { stripMentions, stripStructuralPrefixes } from "./mentions.js";
 import { incrementCompactionCount } from "./session-updates.js";
 
@@ -60,10 +65,77 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     };
   }
   const sessionId = params.sessionEntry.sessionId;
+  const sessionFile = resolveSessionFilePath(sessionId, params.sessionEntry);
   if (isEmbeddedPiRunActive(sessionId)) {
     abortEmbeddedPiRun(sessionId);
     await waitForEmbeddedPiRunEnd(sessionId, 15_000);
   }
+  const agentId =
+    params.agentId ??
+    (params.sessionKey ? resolveAgentIdFromSessionKey(params.sessionKey) : "main");
+  const agentDir = resolveAgentDir(params.cfg, agentId);
+  const timeoutMs = resolveAgentTimeoutMs({ cfg: params.cfg });
+  const authProfileId = await resolveSessionAuthProfileOverride({
+    cfg: params.cfg,
+    provider: params.provider,
+    agentDir,
+    sessionEntry: params.sessionEntry,
+    sessionStore: params.sessionStore,
+    sessionKey: params.sessionKey,
+    storePath: params.storePath,
+    isNewSession: false,
+  });
+  const authProfileIdSource = params.sessionEntry?.authProfileOverrideSource;
+  const followupRun = {
+    prompt: "",
+    enqueuedAt: Date.now(),
+    run: {
+      agentId,
+      agentDir,
+      sessionId,
+      sessionKey: params.sessionKey,
+      messageProvider: params.ctx.Provider?.trim().toLowerCase() || undefined,
+      agentAccountId: params.ctx.AccountId,
+      senderId: params.ctx.SenderId?.trim() || undefined,
+      senderName: params.ctx.SenderName?.trim() || undefined,
+      senderUsername: params.ctx.SenderUsername?.trim() || undefined,
+      senderE164: params.ctx.SenderE164?.trim() || undefined,
+      sessionFile,
+      workspaceDir: params.workspaceDir,
+      config: params.cfg,
+      skillsSnapshot: params.sessionEntry?.skillsSnapshot,
+      provider: params.provider,
+      model: params.model,
+      authProfileId,
+      authProfileIdSource,
+      thinkLevel: params.resolvedThinkLevel ?? (await params.resolveDefaultThinkingLevel()),
+      verboseLevel: params.resolvedVerboseLevel,
+      reasoningLevel: params.resolvedReasoningLevel,
+      bashElevated: {
+        enabled: false,
+        allowed: false,
+        defaultLevel: (params.resolvedElevatedLevel ?? "off") as ElevatedLevel,
+      },
+      timeoutMs,
+      blockReplyBreak: "text_end" as const,
+      ownerNumbers: params.command.ownerList.length > 0 ? params.command.ownerList : undefined,
+    },
+  };
+  logVerbose(`manual /compact: forcing memory flush (sessionKey=${params.sessionKey})`);
+  await runMemoryFlushIfNeeded({
+    cfg: params.cfg,
+    followupRun,
+    sessionCtx: params.ctx,
+    defaultModel: params.model,
+    agentCfgContextTokens: params.cfg.agents?.defaults?.contextTokens,
+    resolvedVerboseLevel: params.resolvedVerboseLevel,
+    sessionEntry: params.sessionEntry,
+    sessionStore: params.sessionStore,
+    sessionKey: params.sessionKey,
+    storePath: params.storePath,
+    isHeartbeat: false,
+    force: true,
+  });
   const customInstructions = extractCompactInstructions({
     rawBody: params.ctx.CommandBody ?? params.ctx.RawBody ?? params.ctx.Body,
     ctx: params.ctx,
@@ -79,7 +151,7 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     groupChannel: params.sessionEntry.groupChannel,
     groupSpace: params.sessionEntry.space,
     spawnedBy: params.sessionEntry.spawnedBy,
-    sessionFile: resolveSessionFilePath(sessionId, params.sessionEntry),
+    sessionFile,
     workspaceDir: params.workspaceDir,
     config: params.cfg,
     skillsSnapshot: params.sessionEntry.skillsSnapshot,
