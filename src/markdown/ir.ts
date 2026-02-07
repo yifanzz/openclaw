@@ -75,6 +75,7 @@ type RenderState = RenderTarget & {
   env: RenderEnv;
   headingStyle: "none" | "bold";
   blockquotePrefix: string;
+  blockquoteDepth: number;
   enableSpoilers: boolean;
   tableMode: MarkdownTableMode;
   table: TableState | null;
@@ -560,6 +561,13 @@ function renderTokens(tokens: MarkdownToken[], state: RenderState): void {
       case "hardbreak":
         appendText(state, "\n");
         break;
+      case "paragraph_open":
+        if (state.blockquoteDepth > 0 && state.blockquotePrefix && state.text.endsWith("\n\n")) {
+          const prefix = state.blockquotePrefix.repeat(state.blockquoteDepth);
+          // Replace \n\n with \n> \n> so the blank line stays inside the blockquote
+          state.text = state.text.slice(0, -1) + `${prefix}\n${prefix}`;
+        }
+        break;
       case "paragraph_close":
         appendParagraphSeparator(state);
         break;
@@ -575,11 +583,13 @@ function renderTokens(tokens: MarkdownToken[], state: RenderState): void {
         appendParagraphSeparator(state);
         break;
       case "blockquote_open":
+        state.blockquoteDepth += 1;
         if (state.blockquotePrefix) {
-          state.text += state.blockquotePrefix;
+          state.text += state.blockquotePrefix.repeat(state.blockquoteDepth);
         }
         break;
       case "blockquote_close":
+        state.blockquoteDepth -= 1;
         state.text += "\n";
         break;
       case "bullet_list_open":
@@ -812,6 +822,7 @@ export function markdownToIRWithMeta(
     env,
     headingStyle: options.headingStyle ?? "none",
     blockquotePrefix: options.blockquotePrefix ?? "",
+    blockquoteDepth: 0,
     enableSpoilers: options.enableSpoilers ?? false,
     tableMode,
     table: null,
