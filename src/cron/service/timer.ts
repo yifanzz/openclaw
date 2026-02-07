@@ -6,6 +6,7 @@ import { locked } from "./locked.js";
 import { ensureLoaded, persist } from "./store.js";
 
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+const OVERDUE_WARN_MS = 60_000;
 
 export function armTimer(state: CronServiceState) {
   if (state.timer) {
@@ -63,6 +64,23 @@ export async function runDueJobs(state: CronServiceState) {
     return typeof next === "number" && now >= next;
   });
   for (const job of due) {
+    const next = job.state.nextRunAtMs;
+    if (typeof next === "number") {
+      const overdueMs = now - next;
+      if (overdueMs > OVERDUE_WARN_MS) {
+        state.deps.log.warn(
+          {
+            jobId: job.id,
+            jobName: job.name,
+            schedule: job.schedule,
+            nextRunAtMs: next,
+            nowMs: now,
+            overdueMs,
+          },
+          "cron: job overdue; timer likely stalled or system slept",
+        );
+      }
+    }
     await executeJob(state, job, now, { forced: false });
   }
 }

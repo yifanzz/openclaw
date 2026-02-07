@@ -80,6 +80,14 @@ export function recomputeNextRuns(state: CronServiceState) {
       );
       job.state.runningAtMs = undefined;
     }
+    if (
+      job.schedule.kind !== "at" &&
+      typeof job.state.nextRunAtMs === "number" &&
+      job.state.nextRunAtMs <= now
+    ) {
+      // Preserve overdue runs so we can catch up once after sleep/restart.
+      continue;
+    }
     job.state.nextRunAtMs = computeJobNextRunAtMs(job, now);
   }
 }
