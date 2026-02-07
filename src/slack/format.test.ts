@@ -79,7 +79,12 @@ describe("markdownToSlackMrkdwn", () => {
 
   it("renders blockquotes", () => {
     const res = markdownToSlackMrkdwn("> Quote");
-    expect(res).toBe("> Quote");
+    expect(res).toBe(">Quote");
+  });
+
+  it("renders multi-paragraph blockquotes with prefix on each paragraph", () => {
+    const res = markdownToSlackMrkdwn("> First paragraph\n>\n> Second paragraph");
+    expect(res).toBe(">First paragraph\n>\n>Second paragraph");
   });
 
   it("handles adjacent list items", () => {

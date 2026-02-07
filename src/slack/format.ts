@@ -63,6 +63,9 @@ function escapeSlackMrkdwnText(text: string): string {
       if (line.startsWith("> ")) {
         return `> ${escapeSlackMrkdwnContent(line.slice(2))}`;
       }
+      if (line.startsWith(">")) {
+        return `>${escapeSlackMrkdwnContent(line.slice(1))}`;
+      }
       return escapeSlackMrkdwnContent(line);
     })
     .join("\n");
@@ -102,7 +105,7 @@ export function markdownToSlackMrkdwn(
     linkify: false,
     autolink: false,
     headingStyle: "bold",
-    blockquotePrefix: "> ",
+    blockquotePrefix: ">",
     tableMode: options.tableMode,
   });
   return renderMarkdownWithMarkers(ir, {
@@ -127,7 +130,7 @@ export function markdownToSlackMrkdwnChunks(
     linkify: false,
     autolink: false,
     headingStyle: "bold",
-    blockquotePrefix: "> ",
+    blockquotePrefix: ">",
     tableMode: options.tableMode,
   });
   const chunks = chunkMarkdownIR(ir, limit);
