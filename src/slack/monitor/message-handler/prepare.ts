@@ -45,6 +45,7 @@ import { resolveSlackEffectiveAllowFrom } from "../auth.js";
 import { resolveSlackChannelConfig } from "../channel-config.js";
 import { normalizeSlackChannelType, type SlackMonitorContext } from "../context.js";
 import { resolveSlackMedia, resolveSlackThreadStarter } from "../media.js";
+import { fetchRecentChannelContext } from "./channel-catchup.js";
 
 export async function prepareSlackMessage(params: {
   ctx: SlackMonitorContext;
@@ -437,6 +438,19 @@ export async function prepareSlackMessage(params: {
           envelope: envelopeOptions,
         }),
     });
+  }
+
+  // Catch up on recent channel messages the session may have missed (e.g., cron deliveries).
+  if (isRoomish && previousTimestamp) {
+    const catchupContext = await fetchRecentChannelContext({
+      channel: message.channel,
+      previousTimestampMs: previousTimestamp,
+      currentMessageTs: message.ts ?? "",
+      client: ctx.app.client,
+    });
+    if (catchupContext) {
+      combinedBody = `${catchupContext}\n${combinedBody}`;
+    }
   }
 
   const slackTo = isDirectMessage ? `user:${message.user}` : `channel:${message.channel}`;
