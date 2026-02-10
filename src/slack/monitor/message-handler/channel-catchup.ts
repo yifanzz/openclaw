@@ -5,6 +5,14 @@ const MIN_GAP_MS = 60_000;
 const MAX_MESSAGES = 20;
 const MAX_MSG_CHARS = 500;
 
+function resolveCurrentTimestampMs(currentMessageTs: string): number | null {
+  const currentSeconds = Number(currentMessageTs);
+  if (!Number.isFinite(currentSeconds)) {
+    return null;
+  }
+  return currentSeconds * 1000;
+}
+
 /**
  * Fetch recent channel messages that occurred between the session's last activity
  * and the current inbound message. Returns formatted context string or empty string.
@@ -21,8 +29,8 @@ export async function fetchRecentChannelContext(params: {
     return "";
   }
 
-  const currentMs = Number(currentMessageTs) * 1000;
-  if (currentMs - previousTimestampMs < MIN_GAP_MS) {
+  const currentMs = resolveCurrentTimestampMs(currentMessageTs);
+  if (!currentMs || currentMs - previousTimestampMs < MIN_GAP_MS) {
     return "";
   }
 
@@ -67,6 +75,74 @@ export async function fetchRecentChannelContext(params: {
     return `[Recent channel activity since last session message:]\n${lines.join("\n")}\n`;
   } catch (err) {
     logVerbose(`slack: channel catchup failed for ${channel}: ${String(err)}`);
+    return "";
+  }
+}
+
+/**
+ * Fetch recent thread replies between the session's last activity and current inbound message.
+ */
+export async function fetchRecentThreadContext(params: {
+  channel: string;
+  threadTs: string;
+  previousTimestampMs: number | undefined;
+  currentMessageTs: string;
+  client: WebClient;
+}): Promise<string> {
+  const { channel, threadTs, previousTimestampMs, currentMessageTs, client } = params;
+
+  if (!previousTimestampMs) {
+    return "";
+  }
+
+  const currentMs = resolveCurrentTimestampMs(currentMessageTs);
+  if (!currentMs || currentMs - previousTimestampMs < MIN_GAP_MS) {
+    return "";
+  }
+
+  try {
+    const oldest = String(previousTimestampMs / 1000);
+    const result = await client.conversations.replies({
+      channel,
+      ts: threadTs,
+      oldest,
+      latest: currentMessageTs,
+      inclusive: false,
+      limit: MAX_MESSAGES,
+    });
+
+    const messages = result.messages;
+    if (!messages || messages.length === 0) {
+      return "";
+    }
+
+    const contextMessages = messages
+      .filter((m) => m.ts !== currentMessageTs && m.ts !== threadTs)
+      .toReversed(); // oldest first
+
+    if (contextMessages.length === 0) {
+      return "";
+    }
+
+    const lines = contextMessages.map((m) => {
+      const sender = m.username ?? m.user ?? m.bot_id ?? "unknown";
+      const ts = m.ts
+        ? new Date(Number(m.ts) * 1000).toISOString().replace("T", " ").slice(0, 19) + " UTC"
+        : "";
+      let text = (m.text ?? "").trim();
+      if (text.length > MAX_MSG_CHARS) {
+        text = text.slice(0, MAX_MSG_CHARS) + "…";
+      }
+      return `[Slack ${sender} ${ts}] ${text}`;
+    });
+
+    logVerbose(
+      `slack: thread catchup for ${channel}:${threadTs}: ${contextMessages.length} messages since last session activity`,
+    );
+
+    return `[Recent thread activity since last session message:]\n${lines.join("\n")}\n`;
+  } catch (err) {
+    logVerbose(`slack: thread catchup failed for ${channel}:${threadTs}: ${String(err)}`);
     return "";
   }
 }

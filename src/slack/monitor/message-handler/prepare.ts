@@ -45,7 +45,7 @@ import { resolveSlackEffectiveAllowFrom } from "../auth.js";
 import { resolveSlackChannelConfig } from "../channel-config.js";
 import { normalizeSlackChannelType, type SlackMonitorContext } from "../context.js";
 import { resolveSlackMedia, resolveSlackThreadStarter } from "../media.js";
-import { fetchRecentChannelContext } from "./channel-catchup.js";
+import { fetchRecentChannelContext, fetchRecentThreadContext } from "./channel-catchup.js";
 
 export async function prepareSlackMessage(params: {
   ctx: SlackMonitorContext;
@@ -405,7 +405,7 @@ export async function prepareSlackMessage(params: {
   const envelopeOptions = resolveEnvelopeFormatOptions(ctx.cfg);
   const previousTimestamp = readSessionUpdatedAt({
     storePath,
-    sessionKey: route.sessionKey,
+    sessionKey,
   });
   const body = formatInboundEnvelope({
     channel: "Slack",
@@ -440,14 +440,24 @@ export async function prepareSlackMessage(params: {
     });
   }
 
-  // Catch up on recent channel messages the session may have missed (e.g., cron deliveries).
+  // Catch up on recent messages the session may have missed (e.g., cron deliveries).
+  // Note: This can duplicate entries already present in pending history; that's OK for now.
   if (isRoomish && previousTimestamp) {
-    const catchupContext = await fetchRecentChannelContext({
-      channel: message.channel,
-      previousTimestampMs: previousTimestamp,
-      currentMessageTs: message.ts ?? "",
-      client: ctx.app.client,
-    });
+    const catchupContext =
+      isThreadReply && ctx.threadHistoryScope === "thread" && threadTs
+        ? await fetchRecentThreadContext({
+            channel: message.channel,
+            threadTs,
+            previousTimestampMs: previousTimestamp,
+            currentMessageTs: message.ts ?? "",
+            client: ctx.app.client,
+          })
+        : await fetchRecentChannelContext({
+            channel: message.channel,
+            previousTimestampMs: previousTimestamp,
+            currentMessageTs: message.ts ?? "",
+            client: ctx.app.client,
+          });
     if (catchupContext) {
       combinedBody = `${catchupContext}\n${combinedBody}`;
     }
