@@ -13,6 +13,13 @@ function resolveCurrentTimestampMs(currentMessageTs: string): number | null {
   return currentSeconds * 1000;
 }
 
+function resolveSlackMessageSender(message: { user?: string; bot_id?: string }): string {
+  if ("username" in message && typeof message.username === "string") {
+    return message.username;
+  }
+  return message.user ?? message.bot_id ?? "unknown";
+}
+
 /**
  * Fetch recent channel messages that occurred between the session's last activity
  * and the current inbound message. Returns formatted context string or empty string.
@@ -57,7 +64,7 @@ export async function fetchRecentChannelContext(params: {
     }
 
     const lines = contextMessages.map((m) => {
-      const sender = m.username ?? m.user ?? m.bot_id ?? "unknown";
+      const sender = resolveSlackMessageSender(m);
       const ts = m.ts
         ? new Date(Number(m.ts) * 1000).toISOString().replace("T", " ").slice(0, 19) + " UTC"
         : "";
@@ -125,7 +132,7 @@ export async function fetchRecentThreadContext(params: {
     }
 
     const lines = contextMessages.map((m) => {
-      const sender = m.username ?? m.user ?? m.bot_id ?? "unknown";
+      const sender = resolveSlackMessageSender(m);
       const ts = m.ts
         ? new Date(Number(m.ts) * 1000).toISOString().replace("T", " ").slice(0, 19) + " UTC"
         : "";
