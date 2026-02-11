@@ -52,4 +52,80 @@ describe("tool display details", () => {
     expect(detail).toContain("limit 20");
     expect(detail).toContain("tools true");
   });
+
+  it("shows cron schedule for add action", () => {
+    // cron expression with timezone
+    const d1 = formatToolDetail(
+      resolveToolDisplay({
+        name: "cron",
+        args: {
+          action: "add",
+          job: {
+            name: "Daily PnL",
+            schedule: { kind: "cron", expr: "0 9 * * *", tz: "Europe/London" },
+          },
+        },
+      }),
+    );
+    expect(d1).toContain("Daily PnL");
+    expect(d1).toContain("0 9 * * *");
+    expect(d1).toContain("Europe/London");
+
+    // one-shot at schedule
+    const d2 = formatToolDetail(
+      resolveToolDisplay({
+        name: "cron",
+        args: {
+          action: "add",
+          job: {
+            name: "Reminder",
+            schedule: { kind: "at", at: "2026-02-11T17:00:00Z" },
+          },
+        },
+      }),
+    );
+    expect(d2).toContain("Reminder");
+    expect(d2).toContain("at 2026-02-11T17:00:00Z");
+
+    // every interval
+    const d3 = formatToolDetail(
+      resolveToolDisplay({
+        name: "cron",
+        args: {
+          action: "add",
+          job: { schedule: { kind: "every", everyMs: 1800000 } },
+        },
+      }),
+    );
+    expect(d3).toContain("every 30m");
+  });
+
+  it("shows cron schedule for update action", () => {
+    const d1 = formatToolDetail(
+      resolveToolDisplay({
+        name: "cron",
+        args: {
+          action: "update",
+          jobId: "abc-123",
+          patch: { schedule: { kind: "cron", expr: "30 8 * * 1" } },
+        },
+      }),
+    );
+    expect(d1).toContain("abc-123");
+    expect(d1).toContain("30 8 * * 1");
+
+    // update with name only
+    const d2 = formatToolDetail(
+      resolveToolDisplay({
+        name: "cron",
+        args: {
+          action: "update",
+          jobId: "abc-123",
+          patch: { name: "Weekly Review" },
+        },
+      }),
+    );
+    expect(d2).toContain("abc-123");
+    expect(d2).toContain("Weekly Review");
+  });
 });

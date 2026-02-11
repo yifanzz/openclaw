@@ -214,6 +214,57 @@ function resolveWriteDetail(args: unknown): string | undefined {
   return resolvePathArg(args);
 }
 
+function resolveCronScheduleDisplay(schedule: unknown): string | undefined {
+  if (!schedule || typeof schedule !== "object") {
+    return undefined;
+  }
+  const s = schedule as Record<string, unknown>;
+  const kind = typeof s.kind === "string" ? s.kind : undefined;
+  if (kind === "at" && typeof s.at === "string") {
+    return `at ${s.at}`;
+  }
+  if (kind === "cron" && typeof s.expr === "string") {
+    const tz = typeof s.tz === "string" ? ` (${s.tz})` : "";
+    return `${s.expr}${tz}`;
+  }
+  if (kind === "every" && typeof s.everyMs === "number") {
+    const mins = Math.round(s.everyMs / 60000);
+    return mins >= 1 ? `every ${mins}m` : `every ${s.everyMs}ms`;
+  }
+  return undefined;
+}
+
+function resolveCronDetail(args: unknown, action: string | undefined): string | undefined {
+  if (!args || typeof args !== "object") {
+    return undefined;
+  }
+  const record = args as Record<string, unknown>;
+  if (action === "add") {
+    const job = record.job as Record<string, unknown> | undefined;
+    if (!job || typeof job !== "object") {
+      return undefined;
+    }
+    const name = typeof job.name === "string" ? job.name : undefined;
+    const schedule = resolveCronScheduleDisplay(job.schedule);
+    const parts = [name, schedule].filter(Boolean);
+    return parts.length > 0 ? parts.join(" · ") : undefined;
+  }
+  if (action === "update") {
+    const id =
+      typeof record.jobId === "string"
+        ? record.jobId
+        : typeof record.id === "string"
+          ? record.id
+          : undefined;
+    const patch = record.patch as Record<string, unknown> | undefined;
+    const schedule = patch ? resolveCronScheduleDisplay(patch.schedule) : undefined;
+    const name = patch && typeof patch.name === "string" ? patch.name : undefined;
+    const parts = [id, name, schedule].filter(Boolean);
+    return parts.length > 0 ? parts.join(" · ") : undefined;
+  }
+  return undefined;
+}
+
 function resolveActionSpec(
   spec: ToolDisplaySpec | undefined,
   action: string | undefined,
@@ -249,6 +300,9 @@ export function resolveToolDisplay(params: {
   }
   if (!detail && (key === "write" || key === "edit" || key === "attach")) {
     detail = resolveWriteDetail(params.args);
+  }
+  if (!detail && key === "cron") {
+    detail = resolveCronDetail(params.args, action);
   }
 
   const detailKeys = actionSpec?.detailKeys ?? spec?.detailKeys ?? FALLBACK.detailKeys ?? [];
