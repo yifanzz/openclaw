@@ -1,6 +1,6 @@
 import type { ChatType } from "../channels/chat-type.js";
 import type { OpenClawConfig } from "../config/config.js";
-import { resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { resolveAgentMainChannels, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { normalizeChatType } from "../channels/chat-type.js";
 import { listBindings } from "./bindings.js";
 import {
@@ -198,15 +198,21 @@ export function resolveAgentRoute(input: ResolveAgentRouteInput): ResolvedAgentR
       dmScope,
       identityLinks,
     }).toLowerCase();
+    const mainChannels = resolveAgentMainChannels(input.cfg, resolvedAgentId);
     const mainSessionKey = buildAgentMainSessionKey({
       agentId: resolvedAgentId,
       mainKey: DEFAULT_MAIN_KEY,
     }).toLowerCase();
+    const normalizedPeerId = peer?.id?.trim().toLowerCase();
+    const shouldUseMainSession =
+      peer?.kind !== "direct" &&
+      Boolean(normalizedPeerId) &&
+      Boolean(mainChannels?.includes(normalizedPeerId ?? ""));
     return {
       agentId: resolvedAgentId,
       channel,
       accountId,
-      sessionKey,
+      sessionKey: shouldUseMainSession ? mainSessionKey : sessionKey,
       mainSessionKey,
       matchedBy,
     };

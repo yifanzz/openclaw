@@ -34,6 +34,10 @@ export type AgentConfig = {
   heartbeat?: AgentDefaultsConfig["heartbeat"];
   identity?: IdentityConfig;
   groupChat?: GroupChatConfig;
+  session?: {
+    /** Channel or group ids that collapse into the agent's main session. */
+    mainChannels?: string[];
+  };
   subagents?: {
     /** Allow spawning sub-agents under other agent ids. Use "*" to allow any. */
     allowAgents?: string[];

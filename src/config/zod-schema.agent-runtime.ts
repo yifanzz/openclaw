@@ -451,6 +451,12 @@ export const AgentEntrySchema = z
     heartbeat: HeartbeatSchema,
     identity: IdentitySchema,
     groupChat: GroupChatSchema,
+    session: z
+      .object({
+        mainChannels: z.array(z.string()).optional(),
+      })
+      .strict()
+      .optional(),
     subagents: z
       .object({
         allowAgents: z.array(z.string()).optional(),

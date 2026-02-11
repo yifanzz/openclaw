@@ -95,6 +95,25 @@ function resolveAgentEntry(cfg: OpenClawConfig, agentId: string): AgentEntry | u
   return listAgents(cfg).find((entry) => normalizeAgentId(entry.id) === id);
 }
 
+function normalizeMainChannelId(value: string | undefined | null): string | undefined {
+  const trimmed = (value ?? "").trim();
+  return trimmed ? trimmed.toLowerCase() : undefined;
+}
+
+export function resolveAgentMainChannels(
+  cfg: OpenClawConfig,
+  agentId: string,
+): string[] | undefined {
+  const entry = resolveAgentEntry(cfg, agentId);
+  const raw = entry?.session?.mainChannels;
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  return raw
+    .map((value) => normalizeMainChannelId(value))
+    .filter((value): value is string => Boolean(value));
+}
+
 export function resolveAgentConfig(
   cfg: OpenClawConfig,
   agentId: string,
