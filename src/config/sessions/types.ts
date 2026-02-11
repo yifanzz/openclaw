@@ -94,6 +94,10 @@ export type SessionEntry = {
   lastThreadId?: string | number;
   skillsSnapshot?: SessionSkillSnapshot;
   systemPromptReport?: SessionSystemPromptReport;
+  previousSessions?: Array<{
+    sessionId: string;
+    sessionFile?: string;
+  }>;
 };
 
 export function mergeSessionEntry(

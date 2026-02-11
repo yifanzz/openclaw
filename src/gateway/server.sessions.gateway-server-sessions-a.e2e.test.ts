@@ -323,18 +323,47 @@ describe("gateway server sessions", () => {
     expect(modelPatched.payload?.entry.modelOverride).toBe("gpt-test-a");
     expect(modelPatched.payload?.entry.providerOverride).toBe("openai");
 
-    const compacted = await rpcReq<{ ok: true; compacted: boolean }>(ws, "sessions.compact", {
+    const originalTranscript = await fs.readFile(path.join(dir, "sess-main.jsonl"), "utf-8");
+    const compacted = await rpcReq<{
+      ok: true;
+      compacted: boolean;
+      previousSessionId?: string;
+      previousSessionFile?: string;
+      archived?: string[];
+    }>(ws, "sessions.compact", {
       key: "agent:main:main",
       maxLines: 3,
     });
     expect(compacted.ok).toBe(true);
     expect(compacted.payload?.compacted).toBe(true);
-    const compactedLines = (await fs.readFile(path.join(dir, "sess-main.jsonl"), "utf-8"))
+    expect(compacted.payload?.previousSessionId).toBe("sess-main");
+    expect(compacted.payload?.previousSessionFile).toBe(path.join(dir, "sess-main.jsonl"));
+    expect(compacted.payload?.archived).toEqual([]);
+    const stored = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
+      string,
+      {
+        sessionId?: string;
+        sessionFile?: string;
+        previousSessions?: Array<{ sessionId?: string; sessionFile?: string }>;
+      }
+    >;
+    const updatedEntry = stored["agent:main:main"];
+    expect(updatedEntry?.sessionId).toBeTruthy();
+    expect(updatedEntry?.sessionId).not.toBe("sess-main");
+    const newSessionId = updatedEntry?.sessionId ?? "";
+    expect(updatedEntry?.sessionFile).toBe(path.join(dir, `${newSessionId}.jsonl`));
+    expect(updatedEntry?.previousSessions?.[0]?.sessionId).toBe("sess-main");
+    expect(updatedEntry?.previousSessions?.[0]?.sessionFile).toBe(
+      path.join(dir, "sess-main.jsonl"),
+    );
+    const compactedLines = (await fs.readFile(path.join(dir, `${newSessionId}.jsonl`), "utf-8"))
       .split(/\r?\n/)
       .filter((l) => l.trim().length > 0);
     expect(compactedLines).toHaveLength(3);
+    const originalAfter = await fs.readFile(path.join(dir, "sess-main.jsonl"), "utf-8");
+    expect(originalAfter).toBe(originalTranscript);
     const filesAfterCompact = await fs.readdir(dir);
-    expect(filesAfterCompact.some((f) => f.startsWith("sess-main.jsonl.bak."))).toBe(true);
+    expect(filesAfterCompact.some((f) => f.startsWith("sess-main.jsonl.bak."))).toBe(false);
 
     const deleted = await rpcReq<{ ok: true; deleted: boolean }>(ws, "sessions.delete", {
       key: "agent:main:discord:group:dev",

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import type { GatewayRequestHandlers } from "./types.js";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { abortEmbeddedPiRun, waitForEmbeddedPiRunEnd } from "../../agents/pi-embedded.js";
@@ -342,20 +343,26 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     });
 
     const archived: string[] = [];
-    if (deleteTranscript && sessionId) {
-      for (const candidate of resolveSessionTranscriptCandidates(
-        sessionId,
-        storePath,
-        entry?.sessionFile,
-        target.agentId,
-      )) {
-        if (!fs.existsSync(candidate)) {
-          continue;
-        }
-        try {
-          archived.push(archiveFileOnDisk(candidate, "deleted"));
-        } catch {
-          // Best-effort.
+    if (deleteTranscript) {
+      const transcriptTargets = [
+        ...(sessionId ? [{ sessionId, sessionFile: entry?.sessionFile }] : []),
+        ...(entry?.previousSessions ?? []),
+      ];
+      for (const targetSession of transcriptTargets) {
+        for (const candidate of resolveSessionTranscriptCandidates(
+          targetSession.sessionId,
+          storePath,
+          targetSession.sessionFile,
+          target.agentId,
+        )) {
+          if (!fs.existsSync(candidate)) {
+            continue;
+          }
+          try {
+            archived.push(archiveFileOnDisk(candidate, "deleted"));
+          } catch {
+            // Best-effort.
+          }
         }
       }
     }
@@ -451,21 +458,75 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       return;
     }
 
-    const archived = archiveFileOnDisk(filePath, "bak");
     const keptLines = lines.slice(-maxLines);
-    fs.writeFileSync(filePath, `${keptLines.join("\n")}\n`, "utf-8");
+    const previousSessionId = sessionId;
+    const previousSessionFile = filePath;
+    let nextSessionId = randomUUID();
+    let nextFilePath = path.join(path.dirname(filePath), `${nextSessionId}.jsonl`);
+    let attempts = 0;
+    while (fs.existsSync(nextFilePath) && attempts < 5) {
+      nextSessionId = randomUUID();
+      nextFilePath = path.join(path.dirname(filePath), `${nextSessionId}.jsonl`);
+      attempts += 1;
+    }
+    if (fs.existsSync(nextFilePath)) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INTERNAL_ERROR, "unable to allocate compacted session file"),
+      );
+      return;
+    }
+    fs.writeFileSync(nextFilePath, `${keptLines.join("\n")}\n`, "utf-8");
 
-    await updateSessionStore(storePath, (store) => {
-      const entryKey = compactTarget.primaryKey;
-      const entryToUpdate = store[entryKey];
-      if (!entryToUpdate) {
-        return;
+    let updatedEntry = false;
+    try {
+      await updateSessionStore(storePath, (store) => {
+        const entryKey = compactTarget.primaryKey;
+        const entryToUpdate = store[entryKey];
+        if (!entryToUpdate) {
+          return;
+        }
+        entryToUpdate.previousSessions = [
+          ...(entryToUpdate.previousSessions ?? []),
+          { sessionId: previousSessionId, sessionFile: previousSessionFile },
+        ];
+        entryToUpdate.sessionId = nextSessionId;
+        entryToUpdate.sessionFile = nextFilePath;
+        delete entryToUpdate.inputTokens;
+        delete entryToUpdate.outputTokens;
+        delete entryToUpdate.totalTokens;
+        delete entryToUpdate.contextTokens;
+        delete entryToUpdate.compactionCount;
+        entryToUpdate.updatedAt = Date.now();
+        updatedEntry = true;
+      });
+    } catch (err) {
+      try {
+        fs.unlinkSync(nextFilePath);
+      } catch {
+        // Best-effort cleanup; session consistency is more important than leaving a stray file.
       }
-      delete entryToUpdate.inputTokens;
-      delete entryToUpdate.outputTokens;
-      delete entryToUpdate.totalTokens;
-      entryToUpdate.updatedAt = Date.now();
-    });
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INTERNAL_ERROR, `failed to update session store: ${String(err)}`),
+      );
+      return;
+    }
+    if (!updatedEntry) {
+      try {
+        fs.unlinkSync(nextFilePath);
+      } catch {
+        // Best-effort cleanup; session consistency is more important than leaving a stray file.
+      }
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INTERNAL_ERROR, "session entry missing during compaction"),
+      );
+      return;
+    }
 
     respond(
       true,
@@ -473,7 +534,9 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         ok: true,
         key: target.canonicalKey,
         compacted: true,
-        archived,
+        archived: [],
+        previousSessionId,
+        previousSessionFile,
         kept: keptLines.length,
       },
       undefined,
