@@ -183,15 +183,25 @@ function resolveDetailFromKeys(args: unknown, keys: string[]): string | undefine
     .join(" · ");
 }
 
-function resolveReadDetail(args: unknown): string | undefined {
+function resolvePathArg(args: unknown): string | undefined {
   if (!args || typeof args !== "object") {
     return undefined;
   }
   const record = args as Record<string, unknown>;
   const path = typeof record.path === "string" ? record.path : undefined;
+  const filePath = typeof record.file_path === "string" ? record.file_path : undefined;
+  return path || filePath || undefined;
+}
+
+function resolveReadDetail(args: unknown): string | undefined {
+  const path = resolvePathArg(args);
   if (!path) {
     return undefined;
   }
+  if (!args || typeof args !== "object") {
+    return undefined;
+  }
+  const record = args as Record<string, unknown>;
   const offset = typeof record.offset === "number" ? record.offset : undefined;
   const limit = typeof record.limit === "number" ? record.limit : undefined;
   if (offset !== undefined && limit !== undefined) {
@@ -201,12 +211,7 @@ function resolveReadDetail(args: unknown): string | undefined {
 }
 
 function resolveWriteDetail(args: unknown): string | undefined {
-  if (!args || typeof args !== "object") {
-    return undefined;
-  }
-  const record = args as Record<string, unknown>;
-  const path = typeof record.path === "string" ? record.path : undefined;
-  return path;
+  return resolvePathArg(args);
 }
 
 function resolveActionSpec(
