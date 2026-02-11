@@ -194,9 +194,20 @@ describe("runReplyAgent typing (heartbeat)", () => {
           stream: "compaction",
           data: { phase: "end", willRetry: false },
         });
-        return { payloads: [{ text: "final" }], meta: {} };
+        return {
+          payloads: [{ text: "final" }],
+          meta: {
+            agentMeta: {
+              compactionCount: 1,
+              usage: { input: 100, output: 50 },
+            },
+          },
+        };
       },
     );
+
+    // Write initial store so persistSessionUsageUpdate can find the entry
+    await fs.writeFile(storePath, JSON.stringify(sessionStore));
 
     const { run } = createMinimalRun({
       resolvedVerboseLevel: "on",
@@ -210,6 +221,9 @@ describe("runReplyAgent typing (heartbeat)", () => {
     const payloads = res as { text?: string }[];
     expect(payloads[0]?.text).toContain("Auto-compaction complete");
     expect(payloads[0]?.text).toContain("count 1");
-    expect(sessionStore.main.compactionCount).toBe(1);
+    // compactionCount is now persisted via persistSessionUsageUpdate (file-based)
+    const { loadSessionStore } = await import("../../config/sessions.js");
+    const persisted = loadSessionStore(storePath);
+    expect(persisted.main?.compactionCount).toBe(1);
   });
 });

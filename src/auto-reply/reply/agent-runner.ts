@@ -38,7 +38,8 @@ import { resolveBlockStreamingCoalescing } from "./block-streaming.js";
 import { createFollowupRunner } from "./followup-runner.js";
 import { enqueueFollowupRun, type FollowupRun, type QueueSettings } from "./queue.js";
 import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-threading.js";
-import { incrementCompactionCount } from "./session-updates.js";
+// incrementCompactionCount is no longer called here — compaction count
+// is persisted via persistSessionUsageUpdate (using agentMeta.compactionCount).
 import { persistSessionUsageUpdate } from "./session-usage.js";
 import { createTypingSignaler } from "./typing-mode.js";
 
@@ -393,6 +394,7 @@ export async function runReplyAgent(params: {
       contextTokensUsed,
       systemPromptReport: runResult.meta.systemPromptReport,
       cliSessionId,
+      compactionCount: runResult.meta.agentMeta?.compactionCount,
     });
 
     // Drain any late tool/block deliveries before deciding there's "nothing to send".
@@ -494,15 +496,14 @@ export async function runReplyAgent(params: {
     // If verbose is enabled and this is a new session, prepend a session hint.
     let finalPayloads = replyPayloads;
     const verboseEnabled = resolvedVerboseLevel !== "off";
-    if (autoCompactionCompleted) {
-      const count = await incrementCompactionCount({
-        sessionEntry: activeSessionEntry,
-        sessionStore: activeSessionStore,
-        sessionKey,
-        storePath,
-      });
+    // Compaction count is now persisted via persistSessionUsageUpdate above
+    // (using agentMeta.compactionCount from the subscriber's local counter).
+    // Show verbose message based on either the event flag or the agentMeta count.
+    const runCompactionCount = runResult.meta.agentMeta?.compactionCount ?? 0;
+    if (autoCompactionCompleted || runCompactionCount > 0) {
       if (verboseEnabled) {
-        const suffix = typeof count === "number" ? ` (count ${count})` : "";
+        const storeCount = (activeSessionEntry?.compactionCount ?? 0) + runCompactionCount;
+        const suffix = storeCount > 0 ? ` (count ${storeCount})` : "";
         finalPayloads = [{ text: `🧹 Auto-compaction complete${suffix}.` }, ...finalPayloads];
       }
     }

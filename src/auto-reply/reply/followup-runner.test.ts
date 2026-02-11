@@ -73,6 +73,8 @@ describe("createFollowupRunner compaction", () => {
     const sessionStore: Record<string, SessionEntry> = {
       main: sessionEntry,
     };
+    // Write initial store so persistSessionUsageUpdate can find the entry
+    await fs.writeFile(storePath, JSON.stringify(sessionStore));
     const onBlockReply = vi.fn(async () => {});
 
     runEmbeddedPiAgentMock.mockImplementationOnce(
@@ -83,7 +85,15 @@ describe("createFollowupRunner compaction", () => {
           stream: "compaction",
           data: { phase: "end", willRetry: false },
         });
-        return { payloads: [{ text: "final" }], meta: {} };
+        return {
+          payloads: [{ text: "final" }],
+          meta: {
+            agentMeta: {
+              compactionCount: 1,
+              usage: { input: 100, output: 50 },
+            },
+          },
+        };
       },
     );
 
@@ -129,7 +139,11 @@ describe("createFollowupRunner compaction", () => {
 
     expect(onBlockReply).toHaveBeenCalled();
     expect(onBlockReply.mock.calls[0][0].text).toContain("Auto-compaction complete");
-    expect(sessionStore.main.compactionCount).toBe(1);
+    // compactionCount is now persisted via persistSessionUsageUpdate (file-based),
+    // not via the in-memory sessionStore. Read from file to verify.
+    const { loadSessionStore } = await import("../../config/sessions.js");
+    const persisted = loadSessionStore(storePath);
+    expect(persisted.main?.compactionCount).toBe(1);
   });
 });
 

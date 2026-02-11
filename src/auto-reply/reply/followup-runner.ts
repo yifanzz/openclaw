@@ -22,7 +22,8 @@ import {
 } from "./reply-payloads.js";
 import { resolveReplyToMode } from "./reply-threading.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
-import { incrementCompactionCount } from "./session-updates.js";
+// incrementCompactionCount is no longer called here — compaction count
+// is persisted via persistSessionUsageUpdate (using agentMeta.compactionCount).
 import { persistSessionUsageUpdate } from "./session-usage.js";
 import { createTypingSignaler } from "./typing-mode.js";
 
@@ -42,7 +43,7 @@ export function createFollowupRunner(params: {
     typing,
     typingMode,
     sessionEntry,
-    sessionStore,
+    sessionStore: _sessionStore,
     sessionKey,
     storePath,
     defaultModel,
@@ -211,6 +212,7 @@ export function createFollowupRunner(params: {
           providerUsed: fallbackProvider,
           contextTokensUsed,
           logLabel: "followup",
+          compactionCount: runResult.meta.agentMeta?.compactionCount,
         });
       }
 
@@ -262,15 +264,12 @@ export function createFollowupRunner(params: {
         return;
       }
 
-      if (autoCompactionCompleted) {
-        const count = await incrementCompactionCount({
-          sessionEntry,
-          sessionStore,
-          sessionKey,
-          storePath,
-        });
+      // Compaction count is now persisted via persistSessionUsageUpdate above.
+      const runCompactionCount = runResult.meta.agentMeta?.compactionCount ?? 0;
+      if (autoCompactionCompleted || runCompactionCount > 0) {
         if (queued.run.verboseLevel && queued.run.verboseLevel !== "off") {
-          const suffix = typeof count === "number" ? ` (count ${count})` : "";
+          const storeCount = (sessionEntry?.compactionCount ?? 0) + runCompactionCount;
+          const suffix = storeCount > 0 ? ` (count ${storeCount})` : "";
           finalPayloads.unshift({
             text: `🧹 Auto-compaction complete${suffix}.`,
           });
